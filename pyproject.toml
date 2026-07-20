@@ -1,0 +1,25 @@
+[project]
+name = "data-manager"
+version = "1.0.0"
+description = "데이터 업로드 관리 앱 — ESG / TBM / Out / SQL대체"
+requires-python = ">=3.12"
+dependencies = [
+    "streamlit>=1.35.0",
+    "pandas>=2.0.0",
+    "pyarrow>=14.0.0",
+    "openpyxl>=3.1.0",
+    # 통합(중앙집중) 추가 — 날씨/LLM/PDF/DB 생성기용
+    "requests>=2.31.0",
+    "holidays>=0.40",
+    "pdfplumber>=0.11.0",
+    "openai>=1.0.0",
+    "sqlalchemy>=2.0.0",
+    "pymysql>=1.1.0",
+    "pyodbc>=5.0.0; sys_platform == 'win32'",  # 운영서버 MSSQL 전송(db/sync) — ODBC Driver 18 필요
+    "python-dotenv>=1.0.0",   # app_config(.env 로드) 필수
+    "watchdog>=4.0.0",        # ptw_watch_job — upload/ptw 폴더 감시
+    "pywin32>=306; sys_platform == 'win32'",  # DRM 엑셀 win32 COM 열기(read_drm_excel)
+]
+
+[tool.uv]
+managed = true
