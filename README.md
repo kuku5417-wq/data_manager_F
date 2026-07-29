@@ -21,4 +21,4 @@ uv run streamlit run app.py --server.port 8510
 - **[시스템_개요_사내망.md](시스템_개요_사내망.md) — 시스템 담당자용 종합 개요(스키마·라이브러리·DB·잡·env)**
 - [CLAUDE.md](CLAUDE.md) — 파일 구조·핵심 규칙
 - [requirements.md](requirements.md) — 시스템 요구사항·무인 파이프라인
-- [data_structure.md](data_structure.md) — parquet 스키마·변환 규칙
+- [DATA_SCHEMA.md](DATA_SCHEMA.md) — **데이터 스키마 정의서(정본)**. 중앙 parquet 전 테이블의 컬럼·타입·병합규칙 — 소비앱 개발 시 참조

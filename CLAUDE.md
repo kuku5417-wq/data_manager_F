@@ -41,7 +41,7 @@ uv run streamlit run app.py --server.port 8510
 
 - **사내망 NAS 전용**: `{NAS_BASE_PATH}\` (`...\06_Commissioning_TEAM`까지 포함한 전체 경로, secret 파일에서 읽음). 로컬 폴백 없음
 - `parquet/` 최종 저장, `upload/{esg,ptw,out}/` 섹션별 업로드, `upload/<section>/_backup/` 원본 백업, `sql/` DB 대체 parquet
-- **상세 스키마·변환 규칙은 반드시 `data_structure.md` 참조**
+- **상세 스키마·변환 규칙은 반드시 `DATA_SCHEMA.md`(데이터 스키마 정의서, 정본) 참조** — 테이블 추가·변경 시 이 문서도 함께 갱신하고 제목의 날짜를 바꾼다. **스키마 변경 시 `data_manager` / `data_manager_F` 양쪽 `DATA_SCHEMA.md` 를 동일하게 갱신**할 것(경로·폴백 절만 환경별로 다름)
 
 ## 핵심 규칙
 
@@ -55,7 +55,7 @@ uv run streamlit run app.py --server.port 8510
   - `?run=` 은 실행 직후 쿼리파라미터를 지운다 (새로고침 재실행 방지)
 - **MSSQL 자동 전송**: 중앙 parquet 폴더에 `db/tables.py TABLES` 대상 parquet 저장 완료 시 `db/auto_sync.py`가 **저장된 parquet 파일을 다시 읽어** `jsh_*` 테이블 전체 교체 push (순차: 엑셀 → parquet → MSSQL). `.env DB_*` 미설정이면 휴면, 실패해도 parquet 저장에는 영향 없음(best-effort). sql/·백업·사용자 정의 parquet 은 제외
 - 날짜 파싱은 다형식 지원 필수 (Excel serial, AM/PM, 오전/오후, `%y/%m/%d %H:%M`)
-- **개인정보(PII)**: 생산 단계 **최소수집** — PTW 담당자명(`HNAME`/`HSE_MANAGE`)·shipbbs 작성자(`INSERTBY`)는 미수집, `SELECT *` 유입분은 `db_connector._drop_pii_cols`로 제거. **표시 마스킹** — out/ra/ptwlist 미리보기는 `pii.mask_df_for_display`(→`mask_name`/`mask_phone`) 경유. parquet·MSSQL 원본은 위험성평가 실무상 원문 보관(하류 접근통제 대상). 상세는 `data_structure.md` [개인정보] 표기 참조
+- **개인정보(PII)**: 생산 단계 **최소수집** — PTW 담당자명(`HNAME`/`HSE_MANAGE`)·shipbbs 작성자(`INSERTBY`)는 미수집, `SELECT *` 유입분은 `db_connector._drop_pii_cols`로 제거. **표시 마스킹** — out/ra/ptwlist 미리보기는 `pii.mask_df_for_display`(→`mask_name`/`mask_phone`) 경유. parquet·MSSQL 원본은 위험성평가 실무상 원문 보관(하류 접근통제 대상). 상세는 `DATA_SCHEMA.md` §6 개인정보 요약 참조
 
 ## 주의
 

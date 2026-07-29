@@ -93,4 +93,4 @@ C:\venvs\data_manager\Scripts\python.exe check_env.py
 - 컬럼 매핑은 후보 키워드 리스트 방식(새 컬럼 대응 시 후보 추가).
 - 저장 후 `touch_sentinel()` 호출(소비 앱 캐시 무효화).
 - 날짜 파싱 다형식(Excel serial·AM/PM·오전/오후·`%y/%m/%d %H:%M`) — `datetime_util`.
-- 상세 스키마: `data_structure.md` 참조.
+- 상세 스키마: `DATA_SCHEMA.md` 참조.
