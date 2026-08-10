@@ -319,15 +319,18 @@ def convert_and_save(
     file_bytes: bytes,
     filename: str,
     parquet_dir: Path,
-    upload_dir: Path,
+    backup_dir: Path,
 ) -> list[dict]:
     """ptwlist 엑셀(bytes) → 일별 확장 후 ptwlist.parquet 누적 저장 (UI/업로더 경로).
 
+    backup_dir: 원본 Excel 사본(`{YYYYMMDD}_{파일명}`)을 남길 폴더.
+      **반드시 `pc.get_backup_dir("ptw")` 를 넘긴다.** 업로드 폴더를 넘기면 사본이
+      업로드 폴더에 쌓여 스캔·변환이 회차마다 느려진다(구 버그).
     Returns: [{"name": str, "ok": bool, "rows": int, "msg": str}, ...]
     """
     # 원본 백업
     try:
-        (upload_dir / f"{datetime.now().strftime('%Y%m%d')}_{filename}").write_bytes(file_bytes)
+        (backup_dir / f"{datetime.now().strftime('%Y%m%d')}_{filename}").write_bytes(file_bytes)
     except Exception:
         pass
 
@@ -339,12 +342,23 @@ def convert_and_save(
     return _process_raw(raw_df, filename, parquet_dir)
 
 
-def convert_path(path: Path | str, parquet_dir: Path) -> list[dict]:
+def convert_path(path: Path | str, parquet_dir: Path,
+                 backup_dir: Path | None = None) -> list[dict]:
     """ptwlist 엑셀(경로) → win32(DRM) 우선 읽기 후 저장 (워처/DRM 경로).
 
-    원본은 upload/ptw 에 그대로 두고(prune_uploads로 최신 N개 유지), parquet만 갱신.
+    backup_dir 지정 시 읽기 전에 원본 사본을 `{YYYYMMDD}_{파일명}` 으로 남긴다.
+    호출부가 변환 성공 후 원본을 `_processed/` 로 옮기므로 사본이 있어야 복구가 된다.
+    복사는 read_bytes 재기록이 아니라 shutil.copy2 로 한다 — DRM 파일은 암호문 그대로
+    보존해야 하고, 메타데이터(mtime)도 유지해야 백업 정리(prune) 순서가 맞는다.
     """
     path = Path(path)
+    if backup_dir is not None:
+        try:
+            import shutil
+            Path(backup_dir).mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, Path(backup_dir) / f"{datetime.now():%Y%m%d}_{path.name}")
+        except Exception:   # noqa: BLE001 — 백업 실패로 변환을 막지 않는다
+            pass
     try:
         raw_df = read_ptw_excel(path)
     except Exception as e:

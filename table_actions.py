@@ -13,6 +13,11 @@ catalog_view 가 기존 "데이터 변환" 화면의 해당 섹션으로 유도�
 주의:
   - **prune_uploads(원본 파일 삭제)를 절대 호출하지 않는다.** 기존 "폴더 전체 변환"
     버튼 전용이다. 테이블 버튼에서 부르면 누를 때마다 원본이 지워진다.
+    단 **변환 성공분을 _processed/ 로 옮기는 것은 허용**한다 — 삭제가 아니라 이동이고
+    _backup/ 에 사본도 남으므로 "원본 소실 방지"라는 위 규칙의 취지에 어긋나지 않는다.
+    이동하지 않으면 버튼을 누를 때마다 같은 파일을 다시 읽는다(ptw 는 파일당 Excel COM).
+  - **컨버터의 backup_dir 인자에는 반드시 pc.get_backup_dir(섹션) 을 넘긴다.**
+    업로드 폴더를 넘기면 사본이 업로드 폴더에 쌓여 회차마다 스캔·변환이 느려진다(구 버그).
   - ra 는 regenerate_ra(out.parquet 에서 파생만) 를 쓴다. convert_and_save 를 쓰면
     ra 버튼이 out 까지 덮어쓴다.
 """
@@ -49,6 +54,17 @@ def scan_folder(folder_path, pattern) -> list[Path]:
     base = Path(folder_path)
     names = list_dir_files(folder_path, pattern)   # str/list 패턴 모두 처리, '_'접두 제외
     return sorted(base / n for n in names)
+
+
+def _move_processed(fp: Path, section: str) -> None:
+    """변환을 마친 원본을 upload/<section>/_processed 로 이동 (실패해도 무시).
+
+    업로드 폴더에 미처리 파일만 남게 해 다음 실행이 같은 파일을 다시 읽지 않게 한다.
+    """
+    try:
+        pc.move_file(fp, pc.get_processed_dir(section))
+    except Exception:   # noqa: BLE001 — 이동 실패해도 변환은 이미 성공
+        pass
 
 
 # ── 테이블별 핸들러 ──────────────────────────────────────────────────────────
@@ -131,18 +147,20 @@ def _run_ptwlist() -> list[Result]:
     if not files:
         return [{"name": "ptwlist", "ok": False, "rows": 0,
                  "msg": f"변환할 ptwlist 파일이 없습니다 — 폴더/파일명 확인: {folder}"}]
-    pq = pc.get_parquet_dir()
+    pq, bk = pc.get_parquet_dir(), pc.get_backup_dir("ptw")
     results: list[Result] = []
     ok_n = fail_n = 0
     for f in files:
         try:
-            res = tbm_converter.convert_path(f, pq)
+            res = tbm_converter.convert_path(f, pq, bk)
         except Exception as e:
             fail_n += 1
             results.append({"name": f.name, "ok": False, "rows": 0, "msg": f"실패 — {e}"})
             continue
         ok = any(r.get("ok") for r in res)
         ok_n, fail_n = (ok_n + 1, fail_n) if ok else (ok_n, fail_n + 1)
+        if ok:
+            _move_processed(f, "ptw")
         last = res[-1] if res else {}
         results.append({"name": f.name, "ok": ok, "rows": last.get("rows", 0),
                         "msg": last.get("msg", "")})
@@ -168,14 +186,16 @@ def _run_esg() -> list[Result]:
     if not files:
         return [{"name": "esg", "ok": False, "rows": 0,
                  "msg": f"변환할 ESG xlsx 가 없습니다 — 폴더 확인: {folder}"}]
-    pq, up = pc.get_parquet_dir(), pc.get_upload_dir("esg")
+    pq, bk = pc.get_parquet_dir(), pc.get_backup_dir("esg")
     ok_n = fail_n = 0
     results: list[Result] = []
     for f in files:
         try:
-            res = esg_converter.convert_path(f, pq, up)
+            res = esg_converter.convert_path(f, pq, bk)
             ok = any(r.get("ok") for r in res)
             ok_n, fail_n = (ok_n + 1, fail_n) if ok else (ok_n, fail_n + 1)
+            if ok:
+                _move_processed(f, "esg")
             results.append({"name": f.name, "ok": ok, "rows": 0, "msg": ""})
         except Exception as e:
             fail_n += 1
@@ -196,13 +216,17 @@ def _run_out() -> list[Result]:
     if not files:
         return [{"name": "out", "ok": False, "rows": 0,
                  "msg": f"변환할 out 파일이 없습니다 — 폴더/파일명 확인: {folder}"}]
-    pq, up = pc.get_parquet_dir(), pc.get_upload_dir("out")
+    pq, bk = pc.get_parquet_dir(), pc.get_backup_dir("out")
     try:
         files_bytes = [(f.name, out_converter.read_out_source_bytes(f)) for f in files]
-        res = out_converter.convert_and_save(files_bytes, pq, up,
+        res = out_converter.convert_and_save(files_bytes, pq, bk,
                                              existing_ra_path=pq / "ra.parquet")
     except Exception as e:
         return [{"name": "out", "ok": False, "rows": 0, "msg": f"실패 — {e}"}]
+    # out 은 파일 단위 성패가 없다 — 일괄 성공일 때만 전체 이동
+    if any(r.get("name") == "out" and r.get("ok") for r in res):
+        for f in files:
+            _move_processed(f, "out")
     return [r for r in res if r.get("name") in ("out", "ra")] or res
 
 

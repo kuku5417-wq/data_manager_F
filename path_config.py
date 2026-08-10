@@ -95,6 +95,36 @@ def get_processed_dir(section: str) -> Path:
     return _ensure(d)
 
 
+def get_failed_dir(section: str) -> Path:
+    """변환 실패 원본을 격리하는 디렉토리 (upload/<section>/_failed).
+
+    성공분(_processed)과 분리해 재시도 대상을 눈으로 구분할 수 있게 한다.
+    """
+    d = get_upload_dir(section) / "_failed"
+    return _ensure(d)
+
+
+def move_file(fp: Path, dest_dir: Path) -> Path:
+    """원본을 dest_dir 로 이동. 이름 충돌 시 타임스탬프 접미를 붙인다.
+
+    변환을 마친 업로드 원본을 _processed/_failed 로 옮기는 공용 구현
+    (UI 폴더변환·테이블버튼·무인 잡이 모두 이 함수를 쓴다).
+    같은 볼륨이면 os.replace 로 원자적 이동, 실패 시 shutil.move 폴백.
+    """
+    from datetime import datetime
+    fp, dest_dir = Path(fp), Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    target = dest_dir / fp.name
+    if target.exists():
+        target = dest_dir / f"{fp.stem}_{datetime.now():%Y%m%d%H%M%S}{fp.suffix}"
+    try:
+        fp.replace(target)
+    except Exception:   # noqa: BLE001 — 볼륨이 다르면 replace 불가 → shutil 폴백
+        import shutil
+        shutil.move(str(fp), str(target))
+    return target
+
+
 def get_message_dir() -> Path:
     """안전메시지 첨부파일 저장 디렉토리 (upload/message)."""
     return get_upload_dir("message")

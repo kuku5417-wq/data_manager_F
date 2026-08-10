@@ -225,11 +225,14 @@ def _restore_ra_state(ra_df: pd.DataFrame, existing_ra: pd.DataFrame | None) -> 
 def convert_and_save(
     files_bytes: list[tuple[str, bytes]],   # [(filename, bytes), ...]
     parquet_dir: Path,
-    upload_dir: Path,
+    backup_dir: Path,
     existing_ra_path: Path | None = None,
 ) -> list[dict]:
     """outside_*.xlsx 복수 파일 → out.parquet + ra.parquet 저장.
 
+    backup_dir: 원본 Excel 사본(`{YYYYMMDD}_{파일명}`)을 남길 폴더.
+      **반드시 `pc.get_backup_dir("out")` 를 넘긴다.** 업로드 폴더를 넘기면 사본이
+      업로드 폴더에 무한 누적된다(구 버그 — 글롭 불일치라 정리도 안 됐다).
     Returns: [{"name": str, "ok": bool, "rows": int, "cols": list, "msg": str}, ...]
     """
     from datetime import datetime as dt
@@ -239,7 +242,7 @@ def convert_and_save(
 
     for fname, fbytes in files_bytes:
         try:
-            (upload_dir / f"{today}_{fname}").write_bytes(fbytes)
+            (backup_dir / f"{today}_{fname}").write_bytes(fbytes)
             df = _load_single_out(fbytes)
             # 방문부서 필터
             if "dept" in df.columns:

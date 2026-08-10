@@ -297,18 +297,33 @@ def _esg_save(parsed: dict, keys_to_save: set[str], simulate: bool = False) -> d
     return results
 
 
+def _move_processed(fp: Path, section: str) -> str:
+    """변환을 마친 원본을 upload/<section>/_processed 로 이동하고 이동한 파일명을 돌려준다.
+
+    업로드 폴더에 미처리 파일만 남게 해서 다음 스캔·변환이 같은 파일을 다시 읽지 않게 한다
+    (ptw 는 파일 1개당 DRM Excel COM 을 새로 띄우므로 재변환 비용이 크다).
+    이동 실패는 변환 결과에 영향을 주지 않는다.
+    """
+    try:
+        return pc.move_file(fp, pc.get_processed_dir(section)).name
+    except Exception as e:   # noqa: BLE001 — 이동 실패해도 변환은 이미 성공
+        return f"(이동 실패: {e})"
+
+
 def _prune_upload(section: str, keep: int = 7) -> None:
-    """upload/<section> 원본과 _backup 사본을 최신 keep개만 유지.
+    """upload/<section> 원본·_backup 사본·_processed 보관분을 각각 최신 keep개만 유지.
 
     데이터 정본은 parquet 이므로 원본 Excel 은 최근 것만 보관한다.
-    _processed 등 다른 하위폴더는 비재귀 glob 이라 영향 없음.
+    (_processed 를 정리하지 않으면 이동분이 무한히 쌓인다.)
     """
     pats = ("*.xlsx", "*.xls", "*.csv")
     try:
         n1 = tbm_converter.prune_uploads(pc.get_upload_dir(section), keep, patterns=pats)
         n2 = tbm_converter.prune_uploads(pc.get_backup_dir(section), keep, patterns=pats)
-        if n1 or n2:
-            print(f"[upload 정리] {section}: 원본 {n1}개·백업 {n2}개 삭제(최신 {keep}개 유지)", flush=True)
+        n3 = tbm_converter.prune_uploads(pc.get_processed_dir(section), keep, patterns=pats)
+        if n1 or n2 or n3:
+            print(f"[upload 정리] {section}: 원본 {n1}개·백업 {n2}개·처리완료 {n3}개 "
+                  f"삭제(각 최신 {keep}개 유지)", flush=True)
     except Exception:
         pass
 
@@ -322,7 +337,9 @@ def _tbm_save(simulate: bool = False) -> dict[str, dict]:
     pq = pc.get_parquet_dir()
     path = p.get("_path")
     if path:
-        results_list = tbm_converter.convert_path(Path(path), pq)
+        # 대화형 단건 저장 — 백업 사본만 남기고 원본은 그대로 둔다(재저장 가능).
+        # 폴더에 쌓인 원본은 폴더 전체 변환 버튼·워처가 _processed 로 옮긴다.
+        results_list = tbm_converter.convert_path(Path(path), pq, pc.get_backup_dir("ptw"))
     else:
         results_list = tbm_converter.convert_and_save(
             p.get("_bytes") or b"", p.get("_filename", "ptwlist.xlsx"),
@@ -691,21 +708,24 @@ def render_esg_tab() -> None:
         if not files:
             st.warning(f"변환할 xlsx 가 없습니다 — 폴더 확인: {_folder}")
         else:
-            pq, up = pc.get_parquet_dir(), pc.get_upload_dir("esg")
+            pq, bk = pc.get_parquet_dir(), pc.get_backup_dir("esg")
             ok_n = fail_n = 0
             logs: list[str] = []
             with st.spinner(f"{len(files)}개 파일 변환 중..."):
                 for f in files:
                     try:
-                        res      = esg_converter.convert_path(f, pq, up)
+                        res      = esg_converter.convert_path(f, pq, bk)
                         sheet_ok = sum(1 for r in res if r.get("ok"))
                         ok_n, fail_n = (ok_n + 1, fail_n) if sheet_ok else (ok_n, fail_n + 1)
                         fails = "; ".join(f"{r['name']}({r['msg']})" for r in res if not r.get("ok"))
                         logs.append(f"{f.name}: 시트 {sheet_ok}/{len(res)} 저장" +
                                     (f" — 미저장 {fails}"[:300] if fails else ""))
+                        if sheet_ok:      # 성공분만 이동 — 실패분은 남겨 재시도
+                            logs.append(f"  └ 원본 → _processed/{_move_processed(f, 'esg')}")
                     except Exception as e:
                         fail_n += 1
                         logs.append(f"{f.name}: 실패 — {e}")
+            _prune_upload("esg")
             pc.touch_sentinel()
             (st.success if fail_n == 0 else st.warning)(
                 f"변환 완료 — 파일 성공 {ok_n} / 실패 {fail_n}")
@@ -781,28 +801,31 @@ def render_tbm_tab() -> None:
     # ── 수동 일괄 변환 버튼: 폴더의 모든 ptwlist → ptwlist.parquet (스캔·선택·파싱 한 번에) ──
     _folder = st.session_state["folder"].get("TBM") or str(pc.get_upload_dir("ptw"))
     if st.button("📥 폴더 전체 변환 → ptwlist.parquet", key="tbm_convert_all", type="primary",
-                 help=f"{_folder} 의 ptwlist 파일 중 최신 7개만 남기고 삭제 후 읽어(win32/DRM) 일별 확장·병합 저장"):
-        tbm_converter.prune_uploads(_folder, 7, ("*ptwlist*.xlsx",))   # 삭제(최신 7개 유지) 후 변환
+                 help=f"{_folder} 의 ptwlist 파일을 읽어(win32/DRM) 일별 확장·병합 저장. "
+                      f"변환한 원본은 _backup 사본을 남기고 _processed 로 옮긴다"):
         files = _scan_folder(_folder, "*ptwlist*.xlsx")
         if not files:
             st.warning(f"변환할 ptwlist 파일이 없습니다 — 폴더/파일명 확인: {_folder}")
         else:
-            pq = pc.get_parquet_dir()
+            pq, bk = pc.get_parquet_dir(), pc.get_backup_dir("ptw")
             ok_n = fail_n = 0
             logs: list[str] = []
             with st.spinner(f"{len(files)}개 파일 변환 중..."):
                 for f in files:
                     try:
-                        res  = tbm_converter.convert_path(f, pq)
+                        res  = tbm_converter.convert_path(f, pq, bk)
                         last = res[-1] if res else {}
                         if any(r.get("ok") for r in res):
                             ok_n += 1
-                        else:
-                            fail_n += 1
+                            logs.append(f"{f.name}: {last.get('msg', '')}"
+                                        f" · 원본 → _processed/{_move_processed(f, 'ptw')}")
+                            continue
+                        fail_n += 1
                         logs.append(f"{f.name}: {last.get('msg', '')}")
                     except Exception as e:
                         fail_n += 1
                         logs.append(f"{f.name}: 실패 — {e}")
+            _prune_upload("ptw")
             pc.touch_sentinel()
             total = len(load_parquet(pq / "ptwlist.parquet"))
             (st.success if fail_n == 0 else st.warning)(
@@ -893,20 +916,24 @@ def render_out_tab() -> None:
     # ── 수동 일괄 변환: 폴더의 모든 outside_*.xlsx → out.parquet + ra.parquet 파생 ──
     _folder = st.session_state["folder"].get("Out") or str(pc.get_upload_dir("out"))
     if st.button("📥 폴더 전체 변환 → out.parquet + ra.parquet", key="out_convert_all", type="primary",
-                 help=f"{_folder} 의 outside 파일 중 최신 7개만 남기고 삭제 후 읽어(win32/DRM 복호) out.parquet 저장 + ra 파생"):
-        tbm_converter.prune_uploads(_folder, 7, out_converter.OUT_FILE_GLOBS)   # 삭제(최신 7개 유지) 후 변환
+                 help=f"{_folder} 의 outside 파일을 읽어(win32/DRM 복호) out.parquet 저장 + ra 파생. "
+                      f"변환한 원본은 _backup 사본을 남기고 _processed 로 옮긴다"):
         files = _scan_folder(_folder, out_converter.OUT_FILE_GLOBS)
         if not files:
             st.warning(f"변환할 파일이 없습니다 — 폴더/파일명 확인: {_folder}")
         else:
-            pq, up = pc.get_parquet_dir(), pc.get_upload_dir("out")
+            pq, bk = pc.get_parquet_dir(), pc.get_backup_dir("out")
             try:
                 with st.spinner(f"{len(files)}개 파일 변환 중..."):
                     files_bytes = [(f.name, out_converter.read_out_source_bytes(f)) for f in files]
-                    res = out_converter.convert_and_save(files_bytes, pq, up,
+                    res = out_converter.convert_and_save(files_bytes, pq, bk,
                                                          existing_ra_path=pq / "ra.parquet")
-                pc.touch_sentinel()
                 out_r = next((r for r in res if r["name"] == "out"), {})
+                if out_r.get("ok"):      # 일괄 성공 시에만 전체 이동 (out 은 파일 단위 성패가 없다)
+                    for f in files:
+                        _move_processed(f, "out")
+                    _prune_upload("out")
+                pc.touch_sentinel()
                 ra_r  = next((r for r in res if r["name"] == "ra"),  {})
                 file_fail = [r for r in res if r["name"] not in ("out", "ra") and not r.get("ok")]
                 (st.success if out_r.get("ok") else st.warning)(

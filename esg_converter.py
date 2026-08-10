@@ -274,18 +274,22 @@ def convert_and_save(
     file_bytes: bytes,
     filename: str,
     parquet_dir: Path,
-    upload_dir: Path,
+    backup_dir: Path,
 ) -> list[dict]:
     """엑셀 바이트 → 6개 parquet 변환 후 저장 (PJT 단위 병합).
 
     업로드 Excel에 있는 PJT만 교체, 없는 PJT는 기존 parquet에서 유지.
+
+    backup_dir: 원본 Excel 사본(`{YYYYMMDD}_{파일명}`)을 남길 폴더.
+      **반드시 `pc.get_backup_dir("esg")` 를 넘긴다.** 업로드 폴더를 넘기면 스캔 패턴
+      `*.xlsx` 에 사본이 다시 걸려 회차마다 파일이 불어난다(구 버그).
     Returns: [{"name": str, "ok": bool, "rows": int, "cols": list, "msg": str}, ...]
     """
     results = []
 
     # 원본 Excel 백업
     today = datetime.now().strftime("%Y%m%d")
-    backup_path = upload_dir / f"{today}_{filename}"
+    backup_path = backup_dir / f"{today}_{filename}"
     try:
         backup_path.write_bytes(file_bytes)
     except Exception as e:
@@ -364,7 +368,7 @@ def read_esg_source_bytes(src: bytes | Path | str) -> bytes:
     return Path(src).read_bytes()   # win32 미가용/실패 → 원본 그대로(평문이면 정상 동작)
 
 
-def convert_path(path: Path | str, parquet_dir: Path, upload_dir: Path) -> list[dict]:
+def convert_path(path: Path | str, parquet_dir: Path, backup_dir: Path) -> list[dict]:
     """ESG 엑셀(경로) → win32(DRM) 복호 후 6개 parquet 저장 (폴더 변환/DRM 경로).
 
     tbm_converter.convert_path 미러. 읽기 실패 시 결과 리스트로 사유 반환.
@@ -375,4 +379,4 @@ def convert_path(path: Path | str, parquet_dir: Path, upload_dir: Path) -> list[
     except Exception as e:
         return [{"name": path.name, "ok": False, "rows": 0, "cols": [],
                  "msg": f"Excel 읽기 실패: {e}"}]
-    return convert_and_save(file_bytes, path.name, parquet_dir, upload_dir)
+    return convert_and_save(file_bytes, path.name, parquet_dir, backup_dir)

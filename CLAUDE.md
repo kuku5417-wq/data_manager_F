@@ -49,8 +49,19 @@ uv run streamlit run app.py --server.port 8510
 - 병합 전략: ESG = PJT 단위 교체 / TBM = `[DEPTNM, PJT, AREA_DETAIL, ACODENM, DATE]` dedup / Out = 전체 재생성 + ra_done 상태 복원
 - 컬럼 매핑은 후보 키워드 리스트 방식 (`ESG_SHEET_CANDIDATES`, `COL_CANDIDATES`, `OUT_COL_MAP`) — 새 컬럼 대응 시 후보 추가로 해결
 - parquet 저장 후 `pc.touch_sentinel()` 호출 (다운스트림 캐시 무효화)
+- **업로드 원본 수명주기**: 변환 성공 원본은 `_backup/` 에 사본을 남기고 `_processed/` 로 **이동**(`pc.move_file`).
+  업로드 폴더에는 미처리분만 남아 같은 파일을 다시 읽지 않는다(ptw 는 파일당 Excel COM 을 새로 띄운다).
+  실패분은 폴더에 남거나 `_failed/` 로 격리 → 재시도 가능
+  - **컨버터의 `backup_dir` 인자에는 반드시 `pc.get_backup_dir(section)`** 을 넘긴다.
+    업로드 폴더를 넘기면 사본이 업로드 폴더에 쌓이고, ESG 는 스캔 패턴이 `*.xlsx` 라 그 사본이
+    다음 회차에 재변환돼 **회차마다 파일이 불어난다**(2026-07-30 수정. 잔여물 정리는 `_cleanup_uploads.py`)
+  - 폴더 전체 변환에서 **변환 전 `prune_uploads` 선삭제를 하지 말 것** — 미처리 파일이 변환 전에 지워진다.
+    정리는 변환 후 `_prune_upload(section)`(원본·`_backup`·`_processed` 각 최신 7개)
+  - `ptw_watch_job._is_target` 은 **`upload/ptw` 직속 파일만** 대상으로 한다 — 하위 `_processed/` 로의
+    이동이 `on_moved` 로 재트리거돼 무한 루프가 되는 것을 막는다
 - **테이블 단위 변환**(`table_actions.py`): 카탈로그 목록 행 `↻ 변환`(`?run=키`) / 상세 버튼에서 딸깍 1회 실행. 대상은 **"원본 → 그 테이블 하나"인 변환만**(`RUN_SINGLE` 8종). ESG 6종·out 은 원본 1개에서 parquet 여러 개가 함께 나오므로 제외(`RUN_MENU`) — 테이블별로 쪼개면 DRM Excel COM 재읽기가 테이블 수만큼 곱해지고 산출물 간 갱신 시점이 어긋난다. 대신 변환 화면의 해당 섹션 단독 렌더로 유도(`session_state["cv_sec"]`)
-  - `table_actions` 핸들러에서 **`prune_uploads` 를 호출하지 말 것** — 원본을 `unlink()` 한다. 원본 정리는 "폴더 전체 변환" 버튼 전용
+  - `table_actions` 핸들러에서 **`prune_uploads` 를 호출하지 말 것** — 원본을 `unlink()` 한다.
+    단 **변환 성공분의 `_processed/` 이동은 허용** — 삭제가 아니고 `_backup/` 사본도 남아 규칙 취지(원본 소실 방지)에 어긋나지 않는다
   - `ra` 는 `regenerate_ra`(out 에서 파생만) 사용. `out_converter.convert_and_save` 는 out+ra 를 함께 써서 out 까지 덮어씀
   - `?run=` 은 실행 직후 쿼리파라미터를 지운다 (새로고침 재실행 방지)
 - **MSSQL 자동 전송**: 중앙 parquet 폴더에 `db/tables.py TABLES` 대상 parquet 저장 완료 시 `db/auto_sync.py`가 **저장된 parquet 파일을 다시 읽어** `jsh_*` 테이블 전체 교체 push (순차: 엑셀 → parquet → MSSQL). `.env DB_*` 미설정이면 휴면, 실패해도 parquet 저장에는 영향 없음(best-effort). sql/·백업·사용자 정의 parquet 은 제외

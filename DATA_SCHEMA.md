@@ -1,8 +1,8 @@
-# data_manager (사내망 전용 · data_manager_F) 데이터 스키마 정의서 (2026-07-29)
+# data_manager (사내망 전용 · data_manager_F) 데이터 스키마 정의서 (2026-07-30)
 
 > **목적** — `data_manager_F` 가 생산하는 중앙 parquet 의 **정본 스키마 정의서**.
 > tbm / tbm_mssql / esg / esg_mssql / costplan / log(SSIMS) / OCR_N 등 **소비앱을 새로 만들거나 수정할 때 이 문서를 참조**한다.
-> **기준일: 2026-07-29** — 이 날짜의 생산자 소스코드와 실파일을 대조해 작성.
+> **기준일: 2026-07-30** — 이 날짜의 생산자 소스코드와 실파일을 대조해 작성.
 >
 > **사외망본 `data_manager` 와 스키마는 완전히 동일하다.** 생산자 모듈(`esg_converter`/`tbm_converter`/`out_converter`/`ptw_enrich`/`message_store`/`date_manager`/`doc_parser`/`parquet_io`/`sn_util`/`db/`)이 두 repo 에서 바이트 단위로 같고, 차이는 **경로(§1)와 DB 폴백(§4.4)** 뿐이다.
 >
@@ -38,10 +38,20 @@
 | 하위 폴더 | 접근 함수 | 용도 |
 |---|---|---|
 | `parquet/` | `pc.get_parquet_dir()` / `app_config.PARQUET_PATH` | **중앙 parquet (본 문서의 대상)** |
-| `upload/{esg,ptw,out,accident,guide,message}/` | `pc.get_upload_dir(section)` | 섹션별 원본 업로드 |
-| `upload/<section>/_backup/` | `pc.get_backup_dir(section)` | 원본 백업 (`YYYYMMDD_원본명`) |
-| `upload/<section>/_processed/` | `pc.get_processed_dir(section)` | 무인 잡 처리완료 원본 이동 (재처리 방지) |
+| `upload/{esg,ptw,out,accident,guide,message}/` | `pc.get_upload_dir(section)` | 섹션별 원본 업로드 — **미처리 원본만 남는다** |
+| `upload/<section>/_backup/` | `pc.get_backup_dir(section)` | 원본 백업 (`YYYYMMDD_원본명`). 최신 7개 유지 |
+| `upload/<section>/_processed/` | `pc.get_processed_dir(section)` | **변환 성공 원본**(UI 폴더변환·테이블버튼·무인 잡 공통). 최신 7개 유지 |
+| `upload/<section>/_failed/` | `pc.get_failed_dir(section)` | 변환 실패 원본 격리 (재시도 대상) |
 | `sql/` | `pc.get_sql_dir()` | DB 미접속 시 대체 parquet |
+
+**업로드 폴더 수명주기** — 변환에 성공한 원본은 `_backup/` 에 타임스탬프 사본을 남기고
+`_processed/` 로 **이동**한다. 그래서 업로드 폴더에는 항상 미처리 파일만 남고(보통 0~1개),
+같은 파일을 다시 읽지 않는다. 실패분만 폴더에 남아 재시도된다.
+`pc.move_file(fp, dest)` 이 이동 단일 구현이다.
+
+> 컨버터의 `backup_dir` 인자에는 **반드시 `pc.get_backup_dir(section)`** 을 넘긴다.
+> 업로드 폴더를 넘기면 사본이 업로드 폴더에 쌓이고, ESG 는 스캔 패턴이 `*.xlsx` 라
+> 그 사본이 다음 회차에 다시 변환돼 회차마다 파일이 불어난다(2026-07-30 수정된 버그).
 
 ### 1.2 parquet/ 내 비(非)테이블 산출물
 

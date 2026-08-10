@@ -24,16 +24,12 @@ from pathlib import Path
 
 
 def _move(fp: Path, dest_dir: Path) -> None:
-    """원본을 dest_dir로 이동 (이름 충돌 시 타임스탬프 접미)."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    target = dest_dir / fp.name
-    if target.exists():
-        target = dest_dir / f"{fp.stem}_{datetime.now():%Y%m%d%H%M%S}{fp.suffix}"
-    try:
-        fp.replace(target)          # 동일 볼륨 원자적 이동
-    except Exception:
-        import shutil
-        shutil.move(str(fp), str(target))
+    """원본을 dest_dir로 이동 — 구현은 path_config.move_file 로 일원화.
+
+    UI 폴더변환·테이블버튼·워처도 같은 함수를 쓴다(이름 충돌 시 타임스탬프 접미).
+    """
+    import path_config as pc
+    pc.move_file(fp, dest_dir)
 
 
 def main() -> int:
@@ -71,22 +67,20 @@ def main() -> int:
                 lines.append(f"  ESG {fp.name}: OK")
             else:
                 any_fail = True
-                _move(fp, esg_dir / "_failed")
+                _move(fp, pc.get_failed_dir("esg"))
                 lines.append(f"  ESG {fp.name}: 처리결과 없음 → _failed")
         except Exception as e:
             any_fail = True
-            _move(fp, esg_dir / "_failed")
+            _move(fp, pc.get_failed_dir("esg"))
             lines.append(f"  ESG {fp.name}: 실패({e}) → _failed")
 
     # ── TBM (ptwlist) ────────────────────────────────────
-    # ptw_watch_job(상시 워처)가 upload/ptw 를 실시간 소유(DRM win32 + 최신 7개 유지).
+    # ptw_watch_job(상시 워처)가 upload/ptw 를 실시간 소유(DRM win32 + _processed 이동).
     # 이중 처리/이동 충돌 방지 위해 import_job 에서는 ptw 를 다루지 않는다.
 
     # ── Out (전체 일괄, 누적 병합) ───────────────────────
     out_dir = pc.get_upload_dir("out")
-    # 삭제(최신 7개 유지) 후 변환 — 초과 원본은 이미 out.parquet에 누적됨
-    import tbm_converter
-    tbm_converter.prune_uploads(out_dir, 7, out_converter.OUT_FILE_GLOBS)
+    # 선(先) 삭제 없음 — 성공분은 아래에서 _processed 로 이동하므로 미처리분만 남는다
     out_files = sorted({p for g in out_converter.OUT_FILE_GLOBS
                         for p in out_dir.glob(g) if p.is_file()})
     if out_files:
@@ -101,7 +95,7 @@ def main() -> int:
             else:
                 any_fail = True
                 for fp in out_files:
-                    _move(fp, out_dir / "_failed")
+                    _move(fp, pc.get_failed_dir("out"))
                 lines.append(f"  Out {len(out_files)}개: 처리결과 없음 → _failed")
         except Exception as e:
             any_fail = True
@@ -109,6 +103,14 @@ def main() -> int:
 
     if any_saved:
         pc.touch_sentinel()
+        # 보관분 정리 — _backup/_processed 가 무한히 쌓이지 않게 각 최신 7개만 유지
+        import tbm_converter
+        for sec in ("esg", "out"):
+            for d in (pc.get_backup_dir(sec), pc.get_processed_dir(sec)):
+                try:
+                    tbm_converter.prune_uploads(d, 7, ("*.xlsx", "*.xls", "*.csv"))
+                except Exception:   # noqa: BLE001 — 정리 실패가 잡을 실패로 번지지 않게
+                    pass
 
     summary = "\n".join(lines) if lines else "신규 파일 없음"
     for ln in lines:

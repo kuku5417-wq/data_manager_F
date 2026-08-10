@@ -28,8 +28,18 @@ def _log(msg: str) -> None:
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
 
 
-def _is_target(path: Path) -> bool:
-    return path.suffix.lower() == ".xlsx" and path.name.lower().startswith("ptwlist_")
+def _is_target(path: Path, ptw_dir: Path | None = None) -> bool:
+    """감시 대상 판정 — upload/ptw **직속**의 ptwlist_*.xlsx 만.
+
+    ptw_dir 을 주면 부모 폴더까지 확인한다. 변환 성공분을 하위 _processed/ 로 옮기면
+    watchdog 의 on_moved 가 dest_path(=_processed/ptwlist_*.xlsx)로 발화하는데,
+    이름만 보면 대상으로 오인해 '변환 → 이동 → 다시 이벤트' 루프에 빠진다.
+    """
+    if not (path.suffix.lower() == ".xlsx" and path.name.lower().startswith("ptwlist_")):
+        return False
+    if ptw_dir is not None and path.parent.resolve() != Path(ptw_dir).resolve():
+        return False
+    return True
 
 
 def _wait_stable(path: Path, tries: int = 12, interval: float = 0.5) -> bool:
@@ -54,12 +64,13 @@ def _wait_stable(path: Path, tries: int = 12, interval: float = 0.5) -> bool:
 
 
 def process_file(path: Path) -> None:
-    """단일 ptwlist 파일 변환 + 센티널 + 최신 7개 유지 + 상태 기록."""
+    """단일 ptwlist 파일 변환 + 센티널 + 원본 _processed 이동 + 상태 기록."""
     import path_config as pc
     import tbm_converter
     import job_status
 
-    if not path.exists() or not _is_target(path):
+    ptw_dir = pc.get_upload_dir("ptw")
+    if not path.exists() or not _is_target(path, ptw_dir):
         return
     if not _wait_stable(path):
         _log(f"불안정/누락 스킵: {path.name}")
@@ -67,17 +78,18 @@ def process_file(path: Path) -> None:
 
     pq = pc.get_parquet_dir()
     try:
-        # 삭제(최신 KEEP_UPLOADS개 유지) 후 변환 — 트리거 파일은 최신이라 잔존
-        removed = tbm_converter.prune_uploads(pc.get_upload_dir("ptw"), KEEP_UPLOADS)
-        if not path.exists():
-            _log(f"prune 후 대상 없음 스킵: {path.name} (upload prune {removed})")
-            return
-        res = tbm_converter.convert_path(path, pq)
+        # 변환 전 백업 사본(_backup) → 성공 시 원본은 _processed 로 이동
+        res = tbm_converter.convert_path(path, pq, pc.get_backup_dir("ptw"))
         ok = any(r.get("ok") and r.get("rows", 0) > 0 for r in res)
         msg = "; ".join(r.get("msg", "") for r in res if r.get("msg"))
         if ok:
             pc.touch_sentinel()
-            _log(f"OK {path.name}: {msg} (upload prune {removed})")
+            moved = pc.move_file(path, pc.get_processed_dir("ptw")).name
+            # 백업·처리완료 보관분만 최신 KEEP_UPLOADS 개 유지 (업로드 폴더는 이동으로 이미 비워짐)
+            # 백업 사본은 "YYYYMMDD_ptwlist_*.xlsx" 라 기본 패턴(ptwlist_*)에 안 걸린다 → *.xlsx 로
+            n_bk = tbm_converter.prune_uploads(pc.get_backup_dir("ptw"), KEEP_UPLOADS, ("*.xlsx",))
+            n_pr = tbm_converter.prune_uploads(pc.get_processed_dir("ptw"), KEEP_UPLOADS, ("*.xlsx",))
+            _log(f"OK {path.name}: {msg} (→ _processed/{moved}, prune 백업 {n_bk}·완료 {n_pr})")
             job_status.write_status("ptw_watch", True, f"{path.name}: {msg}")
         else:
             _log(f"결과없음 {path.name}: {msg}")
@@ -132,7 +144,7 @@ def _run_watchdog(ptw_dir: Path) -> bool:
     timers: dict[str, threading.Timer] = {}
 
     def schedule(path: Path) -> None:
-        if not _is_target(path):
+        if not _is_target(path, ptw_dir):   # 하위 _processed/_backup 이동분은 제외 (루프 방지)
             return
         key = str(path)
         old = timers.get(key)
