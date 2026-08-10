@@ -45,11 +45,12 @@ RA_COLS = [
     "work_content", "greeter", "dept", "period_start", "period_end",
     "is_commissioning", "ra_done", "ra_file",
     # 소비앱(tbm) 기록 상태 — 재생성 시 복원/보존
-    "excluded", "exclude_reason", "greeter_actual", "manual",
+    "excluded", "exclude_reason", "greeter_actual", "greeter_actual_dept", "manual",
 ]
 
 # 재생성 시 소비앱 상태 복원 대상(카드키=RA_CARD_KEYS 매칭)
-RA_STATE_COLS = ["ra_done", "ra_file", "excluded", "exclude_reason", "greeter_actual"]
+RA_STATE_COLS = ["ra_done", "ra_file", "excluded", "exclude_reason",
+                 "greeter_actual", "greeter_actual_dept"]
 
 
 def _parse_date_flex(val) -> "date | None":
@@ -147,8 +148,9 @@ def derive_ra(out_df: pd.DataFrame) -> pd.DataFrame:
                 "ra_file":          "",
                 "excluded":         "N",
                 "exclude_reason":   "",
-                "greeter_actual":   "",
-                "manual":           "N",
+                "greeter_actual":      "",
+                "greeter_actual_dept": "",
+                "manual":              "N",
             })
 
     if not rows:
@@ -175,6 +177,7 @@ def derive_ra(out_df: pd.DataFrame) -> pd.DataFrame:
             excluded         = ("excluded",         "first"),
             exclude_reason   = ("exclude_reason",   "first"),
             greeter_actual   = ("greeter_actual",   "first"),
+            greeter_actual_dept = ("greeter_actual_dept", "first"),
             manual           = ("manual",           "first"),
         )
     )

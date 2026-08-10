@@ -1,4 +1,4 @@
-# data_manager (사내망 전용 · data_manager_F) 데이터 스키마 정의서 (2026-07-30)
+# data_manager (사내망 전용 · data_manager_F) 데이터 스키마 정의서 (2026-08-11)
 
 > **목적** — `data_manager_F` 가 생산하는 중앙 parquet 의 **정본 스키마 정의서**.
 > tbm / tbm_mssql / esg / esg_mssql / costplan / log(SSIMS) / OCR_N 등 **소비앱을 새로 만들거나 수정할 때 이 문서를 참조**한다.
@@ -13,7 +13,7 @@
 ## 0. 사용 규칙 (소비앱 개발자용)
 
 1. **parquet 은 data_manager 만 생산한다.** 소비앱은 **읽기 전용**. 어떤 앱도 중앙 `parquet/` 에 쓰지 않는다.
-   - 예외: `ra.parquet` 의 상태 컬럼(`ra_done`/`ra_file`/`excluded`/`exclude_reason`/`greeter_actual`/`manual`)은 소비앱(tbm)이 기록하는 값이며, data_manager 가 재생성 시 **복원·보존**한다(§4.2).
+   - 예외: `ra.parquet` 의 상태 컬럼(`ra_done`/`ra_file`/`excluded`/`exclude_reason`/`greeter_actual`/`greeter_actual_dept`/`manual`)은 소비앱(tbm)이 기록하는 값이며, data_manager 가 재생성 시 **복원·보존**한다(§4.2).
 2. **경로 하드코딩 금지.** `path_config.get_parquet_dir()` 또는 `app_config.PARQUET_PATH` 경유(§1).
 3. **호선번호는 `SN2601` 형식이 정본.** `sn_util.ensure_sn` / `normalize_sn` 경유하고, 표시단에서 `f"SN{...}"` 재부착 금지.
 4. **컬럼 유무를 가정하지 말 것.** 실파일에는 구버전 잔여 컬럼이 남아 있을 수 있다(§7). 항상 `if col in df.columns` 방어.
@@ -298,8 +298,18 @@
 | `ra_file` | str | 평가서 파일 경로 (기본 `""`). **소비앱 기록 → 복원** / **[PII 주의]** |
 | `excluded` | str | 제외 여부 `"Y"`/`"N"` (기본 `"N"`). **소비앱 기록 → 복원** |
 | `exclude_reason` | str | 제외 사유 (기본 `""`). **소비앱 기록 → 복원** |
-| `greeter_actual` | str | **[PII]** 실제 접견자 (기본 `""`). **소비앱 기록 → 복원** |
+| `greeter_actual` | str | **[PII]** 실제 접견자 **이름만** (기본 `""`). **소비앱 기록 → 복원** |
+| `greeter_actual_dept` | str | 실제 접견자 소속 부서 (기본 `""`). **소비앱 기록 → 복원**. PII 아님(마스킹 대상 아님) |
 | `manual` | str | 수기 추가 행 표식 `"Y"`/`"N"` (기본 `"N"`). **`"Y"` 행은 재생성 시 보존** |
+
+> **`greeter_actual` 은 이름만 담는다.** 2026-08-11 이전에는 부서 전용 컬럼이 없어
+> `"홍길동 / 안전팀"` 처럼 이름과 부서를 `" / "` 로 합쳐 넣은 이력이 있다. 합성값을 이름으로 쓰면
+> 마스킹이 부서까지 먹고(`홍*********팀`) 집계에서 동일인이 두 버킷으로 갈린다.
+> 소비앱은 `out_processor.split_greeter_actual()` 로 읽어 레거시 합성값을 분리하고,
+> 저장 시에는 이름/부서를 각 컬럼에 나눠 넣는다(그 카드는 그때 자연 마이그레이션된다).
+>
+> **부서 귀속** — `greeter_actual_dept` 가 지정된 카드는 소비앱의 부서별 집계·필터에서
+> 그 부서로 귀속된다("유효부서"). `dept`(방문부서)는 **카드 식별키**라 바꾸지 않는다.
 
 ---
 
