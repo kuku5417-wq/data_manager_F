@@ -1,7 +1,7 @@
 # data_manager (사내망 전용 · data_manager_F) 데이터 스키마 정의서 (2026-08-11)
 
 > **목적** — `data_manager_F` 가 생산하는 중앙 parquet 의 **정본 스키마 정의서**.
-> tbm / tbm_mssql / esg / esg_mssql / costplan / log(SSIMS) / OCR_N 등 **소비앱을 새로 만들거나 수정할 때 이 문서를 참조**한다.
+> tbm / esg / esg_mssql / costplan / log(SSIMS) / OCR_N 등 **소비앱을 새로 만들거나 수정할 때 이 문서를 참조**한다.
 > **기준일: 2026-07-30** — 이 날짜의 생산자 소스코드와 실파일을 대조해 작성.
 >
 > **사외망본 `data_manager` 와 스키마는 완전히 동일하다.** 생산자 모듈(`esg_converter`/`tbm_converter`/`out_converter`/`ptw_enrich`/`message_store`/`date_manager`/`doc_parser`/`parquet_io`/`sn_util`/`db/`)이 두 repo 에서 바이트 단위로 같고, 차이는 **경로(§1)와 DB 폴백(§4.4)** 뿐이다.

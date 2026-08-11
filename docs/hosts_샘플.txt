@@ -17,7 +17,7 @@
 # ============================================================
 
 # [경우 1] 모든 앱이 한 대의 공용PC에서 도는 경우 — IP 한 개, 별칭 한 줄
-10.0.0.50    dm  tbm  esg  ocr  esgm  tbmm  cost
+10.0.0.50    dm  tbm  esg  ocr  esgm  cost
 
 # [경우 2] 앱마다 다른 PC에서 도는 경우 — 호스트별로 줄 분리(필요한 것만)
 # 10.0.0.50   dm           # data_manager 호스트
@@ -33,7 +33,6 @@
 #    esg            http://esg:8503
 #    ocr            http://ocr:8520
 #    esg_mssql      http://esgm:8513
-#    tbm_mssql      http://tbmm:8512
 #    costplan       http://cost:8530
 # ------------------------------------------------------------
 #  (호스트 PC 본인은 http://localhost:<포트> 로 접속 — 기본 우회)
