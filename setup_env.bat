@@ -1,9 +1,9 @@
 @echo off
 setlocal
 REM ============================================================
-REM  data_manager_F (INTRANET ONLY) - venv setup + check + run
+REM  data_manager_F - venv setup + check + run
 REM  (ASCII only: avoids Korean-encoding batch parse errors)
-REM  local C: venv -> deps(native-tls) -> check_env.py -> run app
+REM  local C: venv -> net detect -> deps(locked) -> check -> run
 REM ============================================================
 set "APP=data_manager"
 title %APP%
@@ -12,18 +12,21 @@ set "VENV=%LOCALAPPDATA%\venvs\%APP%"
 set "PORT=8510"
 cd /d "%~dp0"
 
-REM ---- proxy: intranet default ON (corporate net). Adjust host/port if changed ----
+REM ---- proxy: INTRANET-ONLY build - always ON. Adjust host/port if it changes ----
 set "HTTP_PROXY=http://60.200.254.1:9090"
 set "HTTPS_PROXY=%HTTP_PROXY%"
 
 REM ---- use Windows cert store (fixes SSL UnknownIssuer behind corp SSL inspection) ----
+REM      UV_NATIVE_TLS is deprecated in new uv; UV_SYSTEM_CERTS replaces it.
+REM      Both are set so old and new uv builds behave the same.
 set "UV_NATIVE_TLS=true"
+set "UV_SYSTEM_CERTS=true"
 
 REM ---- corp proxy drops large parallel downloads: serialize + longer timeout (resumable) ----
 set "UV_CONCURRENT_DOWNLOADS=1"
 set "UV_HTTP_TIMEOUT=300"
 
-REM ---- force 64-bit Python: shared PC may have 32-bit (Python312-32) -> no C-ext wheel -> MSVC build fail. x86_64 request excludes 32-bit; system pref avoids broken managed link ----
+REM ---- force 64-bit Python: shared PC may have 32-bit (Python312-32) -> no C-ext wheel -> MSVC build fail ----
 set "UV_PYTHON_PREFERENCE=only-system"
 REM ---- pin interpreter for ALL uv ops incl build isolation (avoid 32-bit in temp build venv) ----
 set "UV_PYTHON=cpython-3.12-windows-x86_64"
@@ -41,7 +44,7 @@ if errorlevel 1 (
 set "UV_PROJECT_ENVIRONMENT=%VENV%"
 
 echo.
-echo [1/3] install deps (UV_NATIVE_TLS=true : use Windows cert store)
+echo [1/3] install deps (UV_SYSTEM_CERTS=true : use Windows cert store)
 REM --- require 64-bit Python 3.12 (32-bit Python312-32 auto-excluded by x86_64) ---
 uv python find cpython-3.12-windows-x86_64 >nul 2>nul
 if errorlevel 1 (
@@ -50,22 +53,31 @@ if errorlevel 1 (
   echo         32-bit ^(Python312-32^) is unusable: pandas/pyarrow have no 32-bit wheels.
   goto :end
 )
+
+REM --- --locked: honor uv.lock as-is. Without it uv silently re-resolves to the newest
+REM     releases when the lock drifts, which turns into large fresh downloads that the
+REM     corporate proxy then kills. Fail loudly instead.
 if exist "pyproject.toml" (
-  uv sync --python cpython-3.12-windows-x86_64
-) else if exist "requirements.txt" (
-  uv venv "%VENV%" --python cpython-3.12-windows-x86_64
-  uv pip install --python "%VENV%\Scripts\python.exe" -r requirements.txt
+  uv sync --locked --python cpython-3.12-windows-x86_64
 ) else (
-  echo [ERROR] no pyproject.toml / requirements.txt found.
+  echo [ERROR] no pyproject.toml found.
   goto :end
 )
 if errorlevel 1 (
   echo.
-  echo [FAIL] dependency install failed. Try:
-  echo   1^) SSL UnknownIssuer: UV_NATIVE_TLS=true already set. else  set SSL_CERT_FILE=C:\path\corp-ca.pem
-  echo   2^) Connect error: check HTTP_PROXY/HTTPS_PROXY above
-  echo   3^) last resort: uv sync --native-tls --allow-insecure-host pypi.org --allow-insecure-host files.pythonhosted.org
-  echo   4^) 32-bit Python ^(Python312-32^) detected: install 64-bit Python 3.12 from python.org, then rerun
+  echo [FAIL] dependency install failed. Read the actual uv error above first.
+  echo        These are only hints - not detections:
+  echo   - Connect / timed out : corporate net but proxy OFF? rerun after  set SHI_NET=corporate
+  echo                           if pypi is blocked by policy, bring wheels in offline:
+  echo                             python -m pip download ^<pkg^>==^<ver^> -d wheels --only-binary=:all: --python-version 312 --platform win_amd64
+  echo                             then  uv sync --locked --find-links wheels --offline
+  echo   - pyodbc only failed  : start without MSSQL for now, it goes dormant:
+  echo                             uv sync --locked --no-install-package pyodbc
+  echo   - SSL UnknownIssuer   : UV_SYSTEM_CERTS=true is already set.
+  echo                           else  set SSL_CERT_FILE=C:\path\corp-ca.pem
+  echo   - lock is out of date : uv lock   then rerun. --locked refuses a drifted lock.
+  echo   - 32-bit Python       : ONLY if the failing wheel name ends with win32.
+  echo                           a win_amd64 wheel that fails to download is a NETWORK problem.
   goto :end
 )
 
