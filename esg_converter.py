@@ -270,6 +270,53 @@ def _pjt_merge(existing: pd.DataFrame, new_df: pd.DataFrame,
     return merged, len(kept), replaced
 
 
+def backup_source(file_bytes: bytes, filename: str, backup_dir: Path) -> bool:
+    """원본 Excel 사본을 `{YYYYMMDD}_{파일명}` 으로 남긴다. 실패해도 예외를 내지 않는다.
+
+    **backup_dir 에는 반드시 `pc.get_backup_dir("esg")` 를 넘긴다** — 업로드 폴더를
+    넘기면 스캔 패턴 `*.xlsx` 에 사본이 다시 걸려 회차마다 파일이 불어난다(구 버그).
+    """
+    try:
+        path = Path(backup_dir) / f"{datetime.now():%Y%m%d}_{filename}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(file_bytes)
+        return True
+    except Exception as e:   # noqa: BLE001 — 백업 실패로 변환을 막지 않는다
+        logger.warning("원본 백업 실패: %s", e)
+        return False
+
+
+def merge_and_save(key: str, new_df: pd.DataFrame, parquet_dir: Path) -> dict:
+    """ESG 테이블 1종을 PJT 단위 병합 후 저장. 결과 dict 반환.
+
+    UI 저장(app._esg_save)과 파일 변환(convert_and_save)이 **공용으로** 쓴다.
+    두 벌로 두면 한쪽만 고쳐져 갈라진다(백업 경로 버그가 그렇게 생겼다).
+
+    빈 DataFrame 은 **저장하지 않는다** — 시트가 비어 있을 때 기존 parquet 을
+    빈 파일로 덮어써 데이터를 통째로 날리는 사고를 막는다.
+    Returns: {"name", "ok", "rows", "cols", "msg"}
+    """
+    if new_df is None or new_df.empty:
+        return {"name": key, "ok": False, "rows": 0, "cols": [], "msg": "데이터 없음 (저장 생략)"}
+    try:
+        new_df = new_df.copy()
+        if "PJT" in new_df.columns:                       # 호선번호 SN 수렴 (저장 정본 규칙)
+            new_df["PJT"] = new_df["PJT"].map(ensure_sn)
+        out_path = Path(parquet_dir) / f"{key}.parquet"
+        if out_path.exists():
+            existing = pd.read_parquet(out_path)
+            merged, kept, _replaced = _pjt_merge(existing, new_df)
+            pjt_n = new_df["PJT"].nunique() if "PJT" in new_df.columns else "?"
+            note  = f"PJT {pjt_n}개 교체, 기존 {kept}행 유지 → 전체 {len(merged)}행"
+        else:
+            merged, note = new_df, f"{len(new_df)}행 신규 저장"
+        save_parquet_atomic(merged, out_path)
+        return {"name": key, "ok": True, "rows": len(merged),
+                "cols": list(merged.columns), "msg": note}
+    except Exception as e:   # noqa: BLE001 — 한 시트 실패가 나머지 저장을 막지 않게
+        return {"name": key, "ok": False, "rows": 0, "cols": [], "msg": str(e)}
+
+
 def convert_and_save(
     file_bytes: bytes,
     filename: str,
@@ -286,65 +333,22 @@ def convert_and_save(
     Returns: [{"name": str, "ok": bool, "rows": int, "cols": list, "msg": str}, ...]
     """
     results = []
-
-    # 원본 Excel 백업
-    today = datetime.now().strftime("%Y%m%d")
-    backup_path = backup_dir / f"{today}_{filename}"
-    try:
-        backup_path.write_bytes(file_bytes)
-    except Exception as e:
-        logger.warning("원본 백업 실패: %s", e)
+    backup_source(file_bytes, filename, backup_dir)
 
     with pd.ExcelFile(BytesIO(file_bytes)) as xl:
-        # 기본 5개 시트 — PJT 단위 병합
+        # 기본 5개 시트 — PJT 단위 병합 (병합·저장은 merge_and_save 단일본)
         for key, converter in SHEET_CONVERTERS.items():
             try:
-                new_df    = converter(xl)
-                if "PJT" in new_df.columns:
-                    new_df["PJT"] = new_df["PJT"].map(ensure_sn)
-                out_path  = parquet_dir / f"{key}.parquet"
-                new_count = len(new_df)
-                if out_path.exists() and not new_df.empty:
-                    existing              = pd.read_parquet(out_path)
-                    merged, kept, replaced = _pjt_merge(existing, new_df)
-                    note = f"PJT {len(new_df['PJT'].unique()) if 'PJT' in new_df.columns else '?'}개 교체, 기존 {kept}행 유지 → 전체 {len(merged)}행"
-                else:
-                    merged, note = new_df, f"{new_count}행 신규 저장"
-                save_parquet_atomic(merged, out_path)
-                results.append({
-                    "name": key, "ok": True,
-                    "rows": len(merged), "cols": list(merged.columns), "msg": note,
-                })
-            except Exception as e:
-                results.append({
-                    "name": key, "ok": False,
-                    "rows": 0, "cols": [], "msg": str(e),
-                })
+                results.append(merge_and_save(key, converter(xl), parquet_dir))
+            except Exception as e:   # noqa: BLE001 — 시트 파싱 실패는 그 시트만 건너뛴다
+                results.append({"name": key, "ok": False, "rows": 0, "cols": [], "msg": str(e)})
 
-        # 연간계획 — PJT 단위 병합
+        # 연간계획 — 선택적 시트
         if _find_sheet_optional(xl, ["4.연간계획", "연간계획", "시운전유류", "유류계획"]):
             try:
-                new_plan  = convert_fuel_plan(xl)
-                if "PJT" in new_plan.columns:
-                    new_plan["PJT"] = new_plan["PJT"].map(ensure_sn)
-                plan_path = parquet_dir / "fuel_plan.parquet"
-                new_count = len(new_plan)
-                if plan_path.exists() and not new_plan.empty:
-                    existing              = pd.read_parquet(plan_path)
-                    merged, kept, replaced = _pjt_merge(existing, new_plan, pjt_col="PJT")
-                    note = f"PJT {len(new_plan['PJT'].unique()) if 'PJT' in new_plan.columns else '?'}개 교체, 기존 {kept}행 유지 → 전체 {len(merged)}행"
-                else:
-                    merged, note = new_plan, f"{new_count}행 신규 저장"
-                save_parquet_atomic(merged, plan_path)
-                results.append({
-                    "name": "fuel_plan", "ok": True,
-                    "rows": len(merged), "cols": list(merged.columns), "msg": note,
-                })
-            except Exception as e:
-                results.append({
-                    "name": "fuel_plan", "ok": False,
-                    "rows": 0, "cols": [], "msg": str(e),
-                })
+                results.append(merge_and_save("fuel_plan", convert_fuel_plan(xl), parquet_dir))
+            except Exception as e:   # noqa: BLE001
+                results.append({"name": "fuel_plan", "ok": False, "rows": 0, "cols": [], "msg": str(e)})
         else:
             results.append({
                 "name": "fuel_plan", "ok": False,

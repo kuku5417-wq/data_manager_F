@@ -104,6 +104,21 @@ def get_failed_dir(section: str) -> Path:
     return _ensure(d)
 
 
+def unique_path(dest_dir: Path, name: str) -> Path:
+    """dest_dir/name 이 이미 있으면 타임스탬프 접미를 붙여 충돌을 피한 경로 반환.
+
+    같은 이름을 말없이 덮어써서 기존 파일을 잃는 것을 막는 공용 규칙
+    (원본 이동·첨부파일 저장이 모두 이 함수를 쓴다).
+    """
+    from datetime import datetime
+    dest_dir = Path(dest_dir)
+    target = dest_dir / name
+    if not target.exists():
+        return target
+    stem, suffix = Path(name).stem, Path(name).suffix
+    return dest_dir / f"{stem}_{datetime.now():%Y%m%d%H%M%S}{suffix}"
+
+
 def move_file(fp: Path, dest_dir: Path) -> Path:
     """원본을 dest_dir 로 이동. 이름 충돌 시 타임스탬프 접미를 붙인다.
 
@@ -111,12 +126,9 @@ def move_file(fp: Path, dest_dir: Path) -> Path:
     (UI 폴더변환·테이블버튼·무인 잡이 모두 이 함수를 쓴다).
     같은 볼륨이면 os.replace 로 원자적 이동, 실패 시 shutil.move 폴백.
     """
-    from datetime import datetime
     fp, dest_dir = Path(fp), Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    target = dest_dir / fp.name
-    if target.exists():
-        target = dest_dir / f"{fp.stem}_{datetime.now():%Y%m%d%H%M%S}{fp.suffix}"
+    target = unique_path(dest_dir, fp.name)
     try:
         fp.replace(target)
     except Exception:   # noqa: BLE001 — 볼륨이 다르면 replace 불가 → shutil 폴백

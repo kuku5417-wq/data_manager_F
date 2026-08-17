@@ -255,43 +255,30 @@ def _out_parse(pairs: list[tuple[str, bytes]]) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _esg_save(parsed: dict, keys_to_save: set[str], simulate: bool = False) -> dict[str, dict]:
+    """선택한 ESG 시트만 저장. 병합·저장·백업은 esg_converter 단일본을 쓴다.
+
+    시트 선택은 이 화면만의 기능이라 convert_and_save(6종 일괄)를 그대로 쓸 수 없다.
+    대신 그 내부 구현(merge_and_save/backup_source)을 공유해 로직이 갈라지지 않게 한다.
+    """
     results: dict[str, dict] = {}
     out_dir = pc.get_parquet_dir()
     for key in keys_to_save:
         new_df = parsed.get(key, pd.DataFrame())
-        if new_df.empty:
+        if new_df is None or new_df.empty:
             err = (parsed.get("_sheet_errors") or {}).get(key, "")
             results[key] = {"ok": False, "msg": err or "데이터 없음"}
             continue
-        # 호선번호 SN 수렴 (저장 정본 규칙)
-        if "PJT" in new_df.columns:
-            new_df = new_df.copy()
-            new_df["PJT"] = new_df["PJT"].map(ensure_sn)
-        out_path = out_dir / f"{key}.parquet"
-        try:
-            if out_path.exists():
-                existing_df = pd.read_parquet(out_path)
-                merged, kept, _ = esg_converter._pjt_merge(existing_df, new_df, "PJT")
-                pjt_n = new_df["PJT"].nunique() if "PJT" in new_df.columns else "?"
-                note  = f"PJT {pjt_n}개 교체, 기존 {kept}행 유지 → {len(merged)}행"
-            else:
-                merged = new_df.copy()
-                note   = f"신규 {len(merged)}행 저장"
-            if not simulate:
-                save_parquet_atomic(merged, out_path)
-            results[key] = {"ok": True, "msg": note, "rows": len(merged), "simulated": simulate}
-        except Exception as e:
-            results[key] = {"ok": False, "msg": str(e)}
+        if simulate:      # 저장 없이 병합 결과만 예고
+            results[key] = {"ok": True, "simulated": True, "rows": len(new_df),
+                            "msg": f"[시뮬] {len(new_df)}행 병합 예정"}
+            continue
+        r = esg_converter.merge_and_save(key, new_df, out_dir)
+        results[key] = {"ok": r["ok"], "msg": r["msg"], "rows": r["rows"], "simulated": False}
     if not simulate and results:
-        # 원본 Excel 백업 (upload/esg/_backup)
         fbytes = parsed.get("_bytes")
-        if fbytes:
-            try:
-                bpath = pc.get_backup_dir("esg") / \
-                    f"{datetime.now():%Y%m%d}_{parsed.get('_filename', 'esg.xlsx')}"
-                bpath.write_bytes(fbytes)
-            except Exception:
-                pass
+        if fbytes:        # 원본 Excel 백업 (upload/esg/_backup)
+            esg_converter.backup_source(fbytes, parsed.get("_filename", "esg.xlsx"),
+                                        pc.get_backup_dir("esg"))
         _prune_upload("esg")
         pc.touch_sentinel()
     return results
@@ -1198,7 +1185,8 @@ def _msg_save_file(uploaded) -> tuple[str, str]:
     save_dir = pc.get_message_dir()
     ext = uploaded.name.rsplit(".", 1)[-1].lower()
     ref_type = _MSG_EXT_TYPE.get(ext, "pdf")
-    sp = save_dir / uploaded.name
+    # 같은 이름이면 타임스탬프 접미 — 덮어쓰면 기존 메시지의 ref_path 가 다른 파일을 가리킨다
+    sp = pc.unique_path(save_dir, uploaded.name)
     sp.write_bytes(uploaded.getbuffer())
     return ref_type, str(sp)
 
@@ -1436,8 +1424,13 @@ def _render_pq_add() -> None:
             df = pd.read_csv(up) if up.name.lower().endswith(".csv") else pd.read_excel(up)
             key = name.strip().replace(" ", "_")
             try:
-                (pc.get_upload_dir(folder) / up.name).write_bytes(up.getbuffer())
-            except Exception:
+                # 원본 사본은 upload/custom/_backup 에 둔다 — 선택한 폴더에 그대로 쓰면
+                # 그 폴더가 upload/esg 일 때 다음 ESG 폴더 변환이 이 파일을 ESG 원본으로
+                # 읽고, 시트명 불일치 시 인덱스 폴백이라 엉뚱한 시트가 조용히 병합된다.
+                bpath = pc.unique_path(pc.get_backup_dir("custom"),
+                                       f"{datetime.now():%Y%m%d}_{up.name}")
+                bpath.write_bytes(up.getbuffer())
+            except Exception:   # noqa: BLE001 — 사본 실패로 parquet 생성을 막지 않는다
                 pass
             save_parquet_atomic(df, pc.get_parquet_dir() / f"{key}.parquet")
             d = load_sources()
