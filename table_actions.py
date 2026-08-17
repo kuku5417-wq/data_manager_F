@@ -120,9 +120,12 @@ def _run_mapping() -> list[Result]:
     res = ptw_enrich.generate_for_worktypes(missing)
     fail_note = f" · {res['fail']}종 실패(재시도 가능)" if res["fail"] else ""
     added = ", ".join(res["added"][:10]) + ("…" if len(res["added"]) > 10 else "")
+    # 실패 사유를 반드시 표면화 — "응답 없음"만 보이면 키 만료(401)인지 미설정인지 알 수 없다
+    err_note = f" [원인: {res.get('llm_err', '')}]" if res.get("llm_err") else ""
     return [{"name": "mapping", "ok": res["ok"] > 0, "rows": res["ok"],
-             "msg": (f"{res['ok']}종 생성·매핑 추가{fail_note}" + (f" — {added}" if added else ""))
-                    if res["ok"] else f"{len(missing)}종 전부 생성 실패 (LLM 응답 없음){fail_note}"}]
+             "msg": (f"{res['ok']}종 생성·매핑 추가{fail_note}{err_note}" + (f" — {added}" if added else ""))
+                    if res["ok"] else
+                    f"{len(missing)}종 전부 생성 실패 — LLM 응답 없음{fail_note}{err_note}"}]
 
 
 def _run_ra() -> list[Result]:

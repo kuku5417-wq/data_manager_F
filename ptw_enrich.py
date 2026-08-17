@@ -101,13 +101,18 @@ def unmapped_worktypes(df: pd.DataFrame, mapping: dict[str, dict] | None = None)
 def generate_for_worktypes(types: list[str], progress_cb=None) -> dict:
     """주어진 작업유형들을 LLM으로 생성해 mapping.parquet에 누적 저장.
 
-    Returns: {'ok': int, 'fail': int, 'added': [work...]}. 빈 결과는 저장 안 함(재시도 가능).
+    Returns: {'ok': int, 'fail': int, 'added': [work...], 'llm_err': str}.
+    빈 결과는 저장 안 함(재시도 가능).
+    llm_err — 첫 실패의 provider별 사유(SOLA/Upstage/OpenAI). 화면이 "응답 없음"만
+    보여주면 키 만료(401)인지 미설정인지 알 수 없어 진단이 불가능하다
+    (enrich_ptwlist 와 같은 표면화 규칙).
     progress_cb(done, total, work) 호출(선택).
     """
     types = [t for t in (types or []) if t]
     total = len(types)
     new_map: dict[str, dict] = {}
     fail: list[str] = []
+    llm_err = ""
     for i, wt in enumerate(types):
         res = _llm_for_worktype(wt)
         kw   = (res or {}).get("keyword", "") if isinstance(res, dict) else ""
@@ -117,13 +122,20 @@ def generate_for_worktypes(types: list[str], progress_cb=None) -> dict:
             new_map[wt] = {"keyword": kw, "warning": warn}
         else:
             fail.append(wt)
+            if not llm_err:      # 첫 실패 사유만 보관 (반복 호출로 덮이기 전에)
+                try:
+                    from llm_client import _LLM_LAST_ERRORS
+                    llm_err = " | ".join(_LLM_LAST_ERRORS)
+                except Exception:   # noqa: BLE001 — 진단 정보 수집 실패는 무시
+                    pass
         if progress_cb:
             try:
                 progress_cb(i + 1, total, wt)
             except Exception:
                 pass
     _merge_mapping(new_map)
-    return {"ok": len(new_map), "fail": len(fail), "added": list(new_map.keys())}
+    return {"ok": len(new_map), "fail": len(fail), "added": list(new_map.keys()),
+            "llm_err": llm_err}
 
 
 def enrich_ptwlist(df: pd.DataFrame, use_llm: bool = True) -> tuple[pd.DataFrame, dict]:
