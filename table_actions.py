@@ -60,11 +60,9 @@ def _move_processed(fp: Path, section: str) -> None:
     """변환을 마친 원본을 upload/<section>/_processed 로 이동 (실패해도 무시).
 
     업로드 폴더에 미처리 파일만 남게 해 다음 실행이 같은 파일을 다시 읽지 않게 한다.
+    구현은 pc.archive_processed 단일본.
     """
-    try:
-        pc.move_file(fp, pc.get_processed_dir(section))
-    except Exception:   # noqa: BLE001 — 이동 실패해도 변환은 이미 성공
-        pass
+    pc.archive_processed(fp, section)
 
 
 # ── 테이블별 핸들러 ──────────────────────────────────────────────────────────
@@ -169,6 +167,7 @@ def _run_ptwlist() -> list[Result]:
         total = len(pd.read_parquet(p)) if p.exists() else 0
     except Exception:
         total = 0
+    pc.prune_archives("ptw")      # _backup/_processed 만 정리 (원본은 건드리지 않음)
     results.append({"name": "ptwlist", "ok": ok_n > 0 and fail_n == 0, "rows": total,
                     "msg": f"파일 성공 {ok_n} / 실패 {fail_n} · ptwlist.parquet 총 {total:,}행"})
     return results
@@ -200,6 +199,7 @@ def _run_esg() -> list[Result]:
         except Exception as e:
             fail_n += 1
             results.append({"name": f.name, "ok": False, "rows": 0, "msg": f"실패 — {e}"})
+    pc.prune_archives("esg")      # _backup/_processed 만 정리 (원본은 건드리지 않음)
     results.append({"name": "esg", "ok": ok_n > 0 and fail_n == 0, "rows": 0,
                     "msg": f"ESG 파일 성공 {ok_n} / 실패 {fail_n} · 6종 parquet 갱신"})
     return results
@@ -227,6 +227,7 @@ def _run_out() -> list[Result]:
     if any(r.get("name") == "out" and r.get("ok") for r in res):
         for f in files:
             _move_processed(f, "out")
+        pc.prune_archives("out")  # _backup/_processed 만 정리 (원본은 건드리지 않음)
     return [r for r in res if r.get("name") in ("out", "ra")] or res
 
 

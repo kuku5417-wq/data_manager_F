@@ -302,12 +302,9 @@ def _move_processed(fp: Path, section: str) -> str:
 
     업로드 폴더에 미처리 파일만 남게 해서 다음 스캔·변환이 같은 파일을 다시 읽지 않게 한다
     (ptw 는 파일 1개당 DRM Excel COM 을 새로 띄우므로 재변환 비용이 크다).
-    이동 실패는 변환 결과에 영향을 주지 않는다.
+    구현은 pc.archive_processed 단일본 — 이동 실패는 변환 결과에 영향을 주지 않는다.
     """
-    try:
-        return pc.move_file(fp, pc.get_processed_dir(section)).name
-    except Exception as e:   # noqa: BLE001 — 이동 실패해도 변환은 이미 성공
-        return f"(이동 실패: {e})"
+    return pc.archive_processed(fp, section)
 
 
 def _prune_upload(section: str, keep: int = 7) -> None:

@@ -125,6 +125,34 @@ def move_file(fp: Path, dest_dir: Path) -> Path:
     return target
 
 
+def archive_processed(fp: Path, section: str) -> str:
+    """변환을 마친 원본을 _processed 로 옮기고 옮겨진 파일명을 돌려준다 (실패해도 예외 없음).
+
+    UI 폴더변환·테이블버튼이 공용으로 쓴다 — 호출부마다 같은 코드를 두면 한쪽만
+    고쳐져 갈라진다(백업 경로 버그가 그렇게 생겼다).
+    """
+    try:
+        return move_file(fp, get_processed_dir(section)).name
+    except Exception as e:   # noqa: BLE001 — 이동 실패해도 변환은 이미 성공
+        return f"(이동 실패: {e})"
+
+
+def prune_archives(section: str, keep: int = 7) -> tuple[int, int]:
+    """_backup / _processed 보관분을 각각 최신 keep개만 유지. Returns: (백업삭제, 완료삭제).
+
+    업로드 폴더(원본)는 건드리지 않는다 — 미처리 파일을 지우지 않기 위함.
+    """
+    from tbm_converter import prune_uploads
+    pats = ("*.xlsx", "*.xls", "*.csv")
+    n_bk = n_pr = 0
+    try:
+        n_bk = prune_uploads(get_backup_dir(section), keep, patterns=pats)
+        n_pr = prune_uploads(get_processed_dir(section), keep, patterns=pats)
+    except Exception:   # noqa: BLE001 — 정리 실패가 변환 결과에 영향 주지 않게
+        pass
+    return n_bk, n_pr
+
+
 def get_message_dir() -> Path:
     """안전메시지 첨부파일 저장 디렉토리 (upload/message)."""
     return get_upload_dir("message")
