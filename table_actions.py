@@ -30,6 +30,9 @@ from pathlib import Path
 import path_config as pc
 
 # 결과 dict 형식 (converter 들과 동일): {"name", "ok", "rows", "msg"}
+# 선택 키 "skipped": True = 원본이 없어 할 일이 없었다(= 실패가 아님).
+#   전체 반영 배너가 실패와 구분해 세는 데 쓴다 — 매일 올리지 않는 원본 때문에
+#   전체 반영이 늘 경고로 끝나는 것을 막는다. 메시지 문자열에 의존하지 않기 위한 플래그.
 Result = dict
 
 
@@ -128,6 +131,30 @@ def _run_mapping() -> list[Result]:
                     f"{len(missing)}종 전부 생성 실패 — LLM 응답 없음{fail_note}{err_note}"}]
 
 
+def _run_docs() -> list[Result]:
+    """upload/{accident,guide} 의 PDF → accident/guide parquet (신규분만 파싱).
+
+    doc_job 과 동일한 증분 방식(skip_existing=True) — 이미 파싱한 PDF 는 재LLM 하지 않는다.
+    doc_parser 는 함수 안에서 lazy import (pdfplumber 미설치 환경에서도 앱이 떠야 한다).
+    """
+    import doc_parser
+    results: list[Result] = []
+    for name, fn, loader in (("accident", doc_parser.parse_accident_pdfs, doc_parser.load_accident),
+                             ("guide",    doc_parser.parse_guide_pdfs,    doc_parser.load_guide)):
+        try:
+            before = loader()
+            n_before = 0 if before is None else len(before)
+            df = fn(skip_existing=True)
+            added = max(len(df) - n_before, 0)
+            results.append({"name": name, "ok": True, "rows": len(df),
+                            "msg": f"신규 {added}건 파싱 (총 {len(df)}건)" if added
+                                   else f"신규 없음 (총 {len(df)}건)"})
+        except Exception as e:
+            results.append({"name": name, "ok": False, "rows": 0,
+                            "msg": f"실패 — {type(e).__name__}: {e}"})
+    return results
+
+
 def _run_ra() -> list[Result]:
     """out.parquet → ra.parquet 파생만. out 은 건드리지 않는다."""
     import out_converter
@@ -146,7 +173,7 @@ def _run_ptwlist() -> list[Result]:
     folder = pc.get_upload_dir("ptw")
     files = scan_folder(folder, "*ptwlist*.xlsx")
     if not files:
-        return [{"name": "ptwlist", "ok": False, "rows": 0,
+        return [{"name": "ptwlist", "ok": False, "skipped": True, "rows": 0,
                  "msg": f"변환할 ptwlist 파일이 없습니다 — 폴더/파일명 확인: {folder}"}]
     pq, bk = pc.get_parquet_dir(), pc.get_backup_dir("ptw")
     results: list[Result] = []
@@ -186,7 +213,7 @@ def _run_esg() -> list[Result]:
     folder = pc.get_upload_dir("esg")
     files = scan_folder(folder, "*.xlsx")
     if not files:
-        return [{"name": "esg", "ok": False, "rows": 0,
+        return [{"name": "esg", "ok": False, "skipped": True, "rows": 0,
                  "msg": f"변환할 ESG xlsx 가 없습니다 — 폴더 확인: {folder}"}]
     pq, bk = pc.get_parquet_dir(), pc.get_backup_dir("esg")
     ok_n = fail_n = 0
@@ -217,7 +244,7 @@ def _run_out() -> list[Result]:
     folder = pc.get_upload_dir("out")
     files = scan_folder(folder, out_converter.OUT_FILE_GLOBS)
     if not files:
-        return [{"name": "out", "ok": False, "rows": 0,
+        return [{"name": "out", "ok": False, "skipped": True, "rows": 0,
                  "msg": f"변환할 out 파일이 없습니다 — 폴더/파일명 확인: {folder}"}]
     pq, bk = pc.get_parquet_dir(), pc.get_backup_dir("out")
     try:
@@ -315,4 +342,131 @@ def run(key: str) -> list[Result]:
             pc.touch_sentinel()   # 다운스트림 캐시 무효화
         except Exception:
             pass
+    return results
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 원본 그룹 반영 — 사이드바 "반영" 버튼용
+# ══════════════════════════════════════════════════════════════════════════════
+# 같은 원본에서 나오는 산출물을 한 버튼으로 묶는다. 원본 1개를 여러 번 읽지 않게
+# (ESG 는 xlsx 1회 읽기 → 6종, out 은 1회 읽기 → out+ra) 기존 핸들러를 그대로 재사용한다.
+#
+# in_all=False = "전체 반영"에서 제외. LLM 전용 그룹이 대상이다 — LLM 호출은 건당 최대
+# 60초 타임아웃이라 미매핑/신규 PDF 가 쌓여 있으면 전체 반영이 수십 분 걸리고 중간에
+# 멈추기 어렵다. 개별 버튼으로만 실행한다.
+RUN_GROUPS: dict[str, dict] = {
+    "esg": {
+        "label": "📗 ESG 엑셀",
+        "help": "upload/esg 의 xlsx → trial_schedule·fuel_usage·fuel_price·lng_usage·"
+                "fuel_plan·pjtmethod 6종 갱신 (원본 1회 읽기).",
+        "fns": [_run_esg],
+        "in_all": True,
+    },
+    "ptw": {
+        "label": "🦺 작업허가(ptwlist)",
+        "help": "upload/ptw 의 ptwlist_*.xlsx → 일별 확장·dedup 누적. "
+                "매핑에 있는 작업유형은 위험요소가 함께 채워진다.",
+        "fns": [_run_ptwlist],
+        "in_all": True,
+    },
+    "out": {
+        "label": "🧾 사외작업자(out·ra)",
+        "help": "upload/out 의 outside 파일 → out.parquet + ra.parquet 함께 갱신.",
+        "fns": [_run_out],
+        "in_all": True,
+    },
+    "db": {
+        "label": "🗄️ 운영 DB 3종",
+        "help": "MySQL → pjtlist·milestone·shipbbs. DB 미연결이면 기존/더미로 폴백하고 저장하지 않는다.",
+        "fns": [_run_pjtlist, _run_milestone, _run_shipbbs],
+        "in_all": True,
+    },
+    "weather": {
+        "label": "🌤️ 날씨",
+        "help": "기상청 단기예보 API → weather.parquet. .env WEATHER_API_KEY 필요.",
+        "fns": [_run_weather],
+        "in_all": True,
+    },
+    "date": {
+        "label": "📅 달력",
+        "help": "2025-01-01 ~ 오늘+7일, 공휴일 포함 → date.parquet.",
+        "fns": [_run_date],
+        "in_all": True,
+    },
+    "docs": {
+        "label": "📄 문서 PDF (LLM)",
+        "help": "upload/{accident,guide} 의 신규 PDF 만 파싱 → accident·guide. "
+                "LLM 호출 — 전체 반영에는 포함되지 않는다.",
+        "fns": [_run_docs],
+        "in_all": False,
+    },
+    "mapping": {
+        "label": "🤖 매핑 생성 (LLM)",
+        "help": "ptwlist 의 미매핑 작업유형만 LLM 으로 생성해 mapping.parquet 에 누적. "
+                "LLM 호출 — 전체 반영에는 포함되지 않는다.",
+        "fns": [_run_mapping],
+        "in_all": False,
+    },
+}
+
+GROUP_ORDER = ["esg", "ptw", "out", "db", "weather", "date", "docs", "mapping"]
+
+
+def _touch_sentinel_safe(results: list[Result]) -> None:
+    """성공이 하나라도 있으면 센티널 갱신 (다운스트림 캐시 무효화)."""
+    if any(r.get("ok") for r in results):
+        try:
+            pc.touch_sentinel()
+        except Exception:   # noqa: BLE001 — 센티널 실패가 변환 결과를 뒤집지 않게
+            pass
+
+
+def run_group(gkey: str) -> list[Result]:
+    """원본 그룹 1개 반영. 어떤 실패도 예외로 새어나가지 않는다(앱이 죽으면 안 됨).
+
+    Returns: [{"name", "ok", "rows", "msg"}, ...] — 그룹 내 핸들러 결과를 이어붙인 것.
+    """
+    entry = RUN_GROUPS.get(gkey)
+    if entry is None:
+        return [{"name": gkey, "ok": False, "rows": 0, "msg": f"반영 그룹이 아닙니다: {gkey}"}]
+    results: list[Result] = []
+    for fn in entry["fns"]:
+        try:
+            results.extend(fn())
+        except Exception as e:   # noqa: BLE001 — 한 핸들러 실패가 그룹 전체를 막지 않게
+            results.append({"name": gkey, "ok": False, "rows": 0,
+                            "msg": f"실패 — {type(e).__name__}: {e}"})
+    _touch_sentinel_safe(results)
+    return results
+
+
+def run_all(progress_cb=None) -> list[Result]:
+    """전체 반영 — in_all=True 그룹만 순서대로 실행 (LLM 전용 그룹 제외).
+
+    한 그룹이 실패해도 나머지는 계속 진행한다(DB 미연결이면 폴백만 하고 넘어간다).
+    progress_cb(done, total, label) 호출(선택) — UI 진행 표시용.
+    센티널은 마지막에 1회만 갱신한다.
+    """
+    targets = [g for g in GROUP_ORDER if RUN_GROUPS[g]["in_all"]]
+    total = len(targets)
+    results: list[Result] = []
+    for i, gkey in enumerate(targets):
+        entry = RUN_GROUPS[gkey]
+        if progress_cb:
+            try:
+                progress_cb(i, total, entry["label"])
+            except Exception:   # noqa: BLE001 — 진행 표시 실패는 무시
+                pass
+        for fn in entry["fns"]:
+            try:
+                results.extend(fn())
+            except Exception as e:   # noqa: BLE001
+                results.append({"name": gkey, "ok": False, "rows": 0,
+                                "msg": f"실패 — {type(e).__name__}: {e}"})
+    if progress_cb:
+        try:
+            progress_cb(total, total, "완료")
+        except Exception:   # noqa: BLE001
+            pass
+    _touch_sentinel_safe(results)
     return results

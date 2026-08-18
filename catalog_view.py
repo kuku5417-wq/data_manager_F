@@ -260,6 +260,31 @@ def inject_css() -> None:
 
 
 # ── 사이드바 ──────────────────────────────────────────────────────────────────
+def _exec_group(gkey: str | None) -> None:
+    """반영 실행 — gkey=None 이면 전체 반영. 결과를 세션에 담고 rerun.
+
+    전역 st.cache_data.clear() 는 호출하지 않는다(LLM 캐시까지 날아간다).
+    _read_parquet 가 mtime 을 캐시 키로 쓰므로 저장 즉시 자동 무효화된다.
+    """
+    if gkey is None:
+        bar = st.sidebar.progress(0.0, text="전체 반영 준비 중...")
+
+        def _cb(done: int, total: int, label: str) -> None:
+            bar.progress(done / total if total else 1.0, text=f"[{done}/{total}] {label}")
+
+        res = ta.run_all(progress_cb=_cb)
+        bar.empty()
+        title = "전체 반영"
+    else:
+        label = ta.RUN_GROUPS[gkey]["label"]
+        with st.spinner(f"{label} 반영 중..."):
+            res = ta.run_group(gkey)
+        title = label
+    st.session_state["cv_group_result"] = {"title": title, "res": res}
+    st.session_state["cv_screen"] = "catalog"
+    st.rerun()
+
+
 def render_sidebar(handlers: dict) -> None:
     env = "🟢 사내망 · NAS 연결됨"   # data_manager_F: 사내망 고정
     cat = st.session_state.get("cv_cat", "전체")
@@ -287,6 +312,21 @@ def render_sidebar(handlers: dict) -> None:
                 f'<a class="cv-nav{on}" href="?cat={c}" target="_self">'
                 f'<span class="l"><span class="dot" style="background:{CAT_COLOR[c]}"></span>{_esc(c)}</span>'
                 f'<span class="n">{counts[c]}</span></a>', unsafe_allow_html=True)
+
+        # 반영 (원본 그룹별 변환 실행) — 전체는 바깥, 그룹별은 접어둔다
+        st.markdown('<div class="cv-navlbl">반영</div>', unsafe_allow_html=True)
+        n_all = sum(1 for g in ta.GROUP_ORDER if ta.RUN_GROUPS[g]["in_all"])
+        if st.button("↻ 전체 반영", key="cv_run_all", type="primary",
+                     use_container_width=True,
+                     help=f"원본 {n_all}종을 순서대로 반영한다. "
+                          f"LLM 전용(문서 PDF·매핑 생성)은 제외 — 개별 버튼으로 실행."):
+            _exec_group(None)
+        with st.expander("원본별 반영", expanded=False):
+            for gkey in ta.GROUP_ORDER:
+                g = ta.RUN_GROUPS[gkey]
+                if st.button(g["label"], key=f"cv_run_g_{gkey}",
+                             use_container_width=True, help=g["help"]):
+                    _exec_group(gkey)
 
         # 기능
         st.markdown('<div class="cv-navlbl">기능</div>', unsafe_allow_html=True)
@@ -372,6 +412,23 @@ def _render_run_result(key: str, results: list[dict]) -> None:
         with st.expander("변환 로그", expanded=not ok):
             st.code("\n".join(
                 f"{r.get('name')}: ok={r.get('ok')} rows={r.get('rows')} {r.get('msg', '')}"
+                for r in results), language="text")
+
+
+def _render_group_result(title: str, results: list[dict]) -> None:
+    """반영 결과 배너 (그룹/전체). results 는 run_group()/run_all() 반환값."""
+    ok_n = sum(1 for r in results if r.get("ok"))
+    skip_n = sum(1 for r in results if not r.get("ok") and r.get("skipped"))
+    fail_n = len(results) - ok_n - skip_n
+    # 원본이 없어 건너뛴 것은 실패가 아니다 — 매일 올리지 않는 원본 때문에
+    # 전체 반영이 늘 경고로 끝나지 않게 따로 센다.
+    msg = f"{title} — 성공 {ok_n} / 실패 {fail_n}" + (f" / 건너뜀 {skip_n}(원본 없음)" if skip_n else "")
+    (st.success if fail_n == 0 else st.warning)(msg)
+    if results:
+        with st.expander("반영 로그", expanded=fail_n > 0):
+            st.code("\n".join(
+                f"{'OK  ' if r.get('ok') else ('SKIP' if r.get('skipped') else 'FAIL')} {r.get('name')}: "
+                f"rows={r.get('rows')} {r.get('msg', '')}"
                 for r in results), language="text")
 
 
@@ -565,6 +622,11 @@ def render_app(handlers: dict | None = None) -> None:
     screen = st.session_state.get("cv_screen", "catalog")
 
     render_sidebar(handlers)
+
+    # 사이드바 반영 결과 (1회 표시)
+    gres = st.session_state.pop("cv_group_result", None)
+    if gres:
+        _render_group_result(gres["title"], gres["res"])
 
     # 기능 화면
     if screen.startswith("func:"):
