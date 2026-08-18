@@ -57,6 +57,18 @@ CAT_COLOR = {
     "유류·ESG": "#0A5AD4", "안전·작업허가": "#12A150", "마스터·SQL": "#6D5AE0",
     "자동수집": "#0EA5B7", "문서": "#C77700", "메시지": "#DC2626",
 }
+# 카테고리 → 반영할 원본 그룹(table_actions.RUN_GROUPS 키). 사이드바 카테고리 행의 ↻ 버튼용.
+# 카테고리를 콕 집어 누른 것은 의도적 실행으로 보고 **LLM 그룹까지 포함**한다.
+# (전체 반영은 반대로 in_all=True 인 빠른 그룹만 돈다 — run_all 참조)
+CAT_GROUPS: dict[str, list[str]] = {
+    "유류·ESG": ["esg"],
+    "안전·작업허가": ["ptw", "out"],
+    "마스터·SQL": ["db"],
+    "자동수집": ["weather", "date", "mapping"],
+    "문서": ["docs"],
+    "메시지": [],          # 직접 입력 — 반영 대상 없음(버튼 미표시)
+}
+
 # 원본 없는 자동 생성 데이터(입력 폴더 대신 소스 라벨 표시 / 상태 '자동')
 NO_SOURCE = {
     "weather": "기상청 API", "mapping": "LLM 생성", "date": "자동 생성",
@@ -194,6 +206,15 @@ section[data-testid="stSidebar"] .stButton>button:hover{background:rgba(255,255,
 .cv-nav .l{display:flex;align-items:center;gap:9px;}
 .cv-nav .dot{width:8px;height:8px;border-radius:2px;} .cv-nav .n{font-size:11px;color:#5B7194;}
 .cv-nav.on .n{color:#B7C4D8;}
+/* 카테고리 행 = 내비 링크 + 반영(↻) 앵커. <a> 안에 <a> 를 넣을 수 없어 형제로 배치한다. */
+.cv-navrow{display:flex;align-items:center;gap:4px;}
+.cv-navrow .cv-nav{flex:1;min-width:0;}
+.cv-apply{flex:none;display:inline-flex;align-items:center;justify-content:center;
+  width:26px;height:26px;border-radius:7px;font-size:13px;font-weight:700;text-decoration:none;
+  color:#8FA3BF;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10);}
+.cv-apply:hover{background:var(--blue);color:#fff;border-color:var(--blue);}
+.cv-apply.llm{color:#E0A34E;border-color:rgba(224,163,78,.35);}
+.cv-apply.llm:hover{background:#C77700;color:#fff;border-color:#C77700;}
 /* 헤더 */
 .cv-htitle{font-size:20px;font-weight:800;color:var(--ink);letter-spacing:-.02em;}
 .cv-hsub{font-size:12.5px;color:var(--mut);margin-top:2px;}
@@ -260,27 +281,37 @@ def inject_css() -> None:
 
 
 # ── 사이드바 ──────────────────────────────────────────────────────────────────
-def _exec_group(gkey: str | None) -> None:
-    """반영 실행 — gkey=None 이면 전체 반영. 결과를 세션에 담고 rerun.
+def _apply_anchor(c: str) -> str:
+    """카테고리 행의 ↻ 반영 앵커. 대상 그룹이 없으면(메시지) 빈 문자열.
+
+    카탈로그 행의 cv-run 과 같은 방식(쿼리파라미터 앵커) — render_app 이 ?apply= 를 처리한다.
+    """
+    gkeys = CAT_GROUPS.get(c) or []
+    if not gkeys:
+        return ""
+    labels = [ta.RUN_GROUPS[g]["label"] for g in gkeys if g in ta.RUN_GROUPS]
+    has_llm = any(not ta.RUN_GROUPS[g]["in_all"] for g in gkeys if g in ta.RUN_GROUPS)
+    tip = f"{c} 반영 — {' + '.join(labels)}"
+    if has_llm:
+        tip += " · LLM 포함(오래 걸릴 수 있음)"
+    return (f'<a class="cv-apply{" llm" if has_llm else ""}" href="?cat={c}&apply={c}" '
+            f'target="_self" title="{_esc(tip)}">↻</a>')
+
+
+def _exec_all() -> None:
+    """전체 반영 실행 — 결과를 세션에 담고 rerun.
 
     전역 st.cache_data.clear() 는 호출하지 않는다(LLM 캐시까지 날아간다).
     _read_parquet 가 mtime 을 캐시 키로 쓰므로 저장 즉시 자동 무효화된다.
     """
-    if gkey is None:
-        bar = st.sidebar.progress(0.0, text="전체 반영 준비 중...")
+    bar = st.sidebar.progress(0.0, text="전체 반영 준비 중...")
 
-        def _cb(done: int, total: int, label: str) -> None:
-            bar.progress(done / total if total else 1.0, text=f"[{done}/{total}] {label}")
+    def _cb(done: int, total: int, label: str) -> None:
+        bar.progress(done / total if total else 1.0, text=f"[{done}/{total}] {label}")
 
-        res = ta.run_all(progress_cb=_cb)
-        bar.empty()
-        title = "전체 반영"
-    else:
-        label = ta.RUN_GROUPS[gkey]["label"]
-        with st.spinner(f"{label} 반영 중..."):
-            res = ta.run_group(gkey)
-        title = label
-    st.session_state["cv_group_result"] = {"title": title, "res": res}
+    res = ta.run_all(progress_cb=_cb)
+    bar.empty()
+    st.session_state["cv_group_result"] = {"title": "전체 반영", "res": res}
     st.session_state["cv_screen"] = "catalog"
     st.rerun()
 
@@ -308,25 +339,19 @@ def render_sidebar(handlers: dict) -> None:
         st.markdown('<div class="cv-navlbl">카테고리</div>', unsafe_allow_html=True)
         for c in CAT_ORDER:
             on = " on" if (screen == "catalog" and cat == c) else ""
-            st.markdown(
-                f'<a class="cv-nav{on}" href="?cat={c}" target="_self">'
-                f'<span class="l"><span class="dot" style="background:{CAT_COLOR[c]}"></span>{_esc(c)}</span>'
-                f'<span class="n">{counts[c]}</span></a>', unsafe_allow_html=True)
+            nav = (f'<a class="cv-nav{on}" href="?cat={c}" target="_self">'
+                   f'<span class="l"><span class="dot" style="background:{CAT_COLOR[c]}"></span>'
+                   f'{_esc(c)}</span><span class="n">{counts[c]}</span></a>')
+            st.markdown(f'<div class="cv-navrow">{nav}{_apply_anchor(c)}</div>',
+                        unsafe_allow_html=True)
 
         # 반영 (원본 그룹별 변환 실행) — 전체는 바깥, 그룹별은 접어둔다
-        st.markdown('<div class="cv-navlbl">반영</div>', unsafe_allow_html=True)
         n_all = sum(1 for g in ta.GROUP_ORDER if ta.RUN_GROUPS[g]["in_all"])
         if st.button("↻ 전체 반영", key="cv_run_all", type="primary",
                      use_container_width=True,
-                     help=f"원본 {n_all}종을 순서대로 반영한다. "
-                          f"LLM 전용(문서 PDF·매핑 생성)은 제외 — 개별 버튼으로 실행."):
-            _exec_group(None)
-        with st.expander("원본별 반영", expanded=False):
-            for gkey in ta.GROUP_ORDER:
-                g = ta.RUN_GROUPS[gkey]
-                if st.button(g["label"], key=f"cv_run_g_{gkey}",
-                             use_container_width=True, help=g["help"]):
-                    _exec_group(gkey)
+                     help=f"원본 {n_all}종을 순서대로 반영한다(빠른 것만). "
+                          f"LLM 전용(문서 PDF·매핑 생성)은 제외 — 해당 카테고리의 ↻ 로 실행."):
+            _exec_all()
 
         # 기능
         st.markdown('<div class="cv-navlbl">기능</div>', unsafe_allow_html=True)
@@ -605,6 +630,22 @@ def render_app(handlers: dict | None = None) -> None:
         st.session_state["cv_screen"] = "catalog"
         st.query_params.clear()
         st.query_params["cat"] = rcat
+        st.rerun()
+
+    # 카테고리 반영 실행 (?apply=카테고리) — 그 카테고리의 원본 그룹을 모두 돌린다.
+    # 전체 반영과 달리 LLM 그룹도 포함한다(카테고리를 직접 누른 것 = 의도적 실행).
+    if "apply" in qp:
+        ckey = qp.get("apply")
+        acat = qp.get("cat") or st.session_state.get("cv_cat", "전체")
+        gkeys = CAT_GROUPS.get(ckey) or []
+        if gkeys:
+            with st.spinner(f"{ckey} 반영 중..."):
+                st.session_state["cv_group_result"] = {
+                    "title": f"{ckey} 반영", "res": ta.run_groups(gkeys)}
+        st.session_state["cv_cat"] = acat
+        st.session_state["cv_screen"] = "catalog"
+        st.query_params.clear()
+        st.query_params["cat"] = acat
         st.rerun()
 
     # 기능 화면 이동 (?goto=convert&sec=ESG) — 원본 1개 → parquet 여러 개인 변환

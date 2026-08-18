@@ -421,36 +421,17 @@ def _touch_sentinel_safe(results: list[Result]) -> None:
             pass
 
 
-def run_group(gkey: str) -> list[Result]:
-    """원본 그룹 1개 반영. 어떤 실패도 예외로 새어나가지 않는다(앱이 죽으면 안 됨).
-
-    Returns: [{"name", "ok", "rows", "msg"}, ...] — 그룹 내 핸들러 결과를 이어붙인 것.
-    """
-    entry = RUN_GROUPS.get(gkey)
-    if entry is None:
-        return [{"name": gkey, "ok": False, "rows": 0, "msg": f"반영 그룹이 아닙니다: {gkey}"}]
-    results: list[Result] = []
-    for fn in entry["fns"]:
-        try:
-            results.extend(fn())
-        except Exception as e:   # noqa: BLE001 — 한 핸들러 실패가 그룹 전체를 막지 않게
-            results.append({"name": gkey, "ok": False, "rows": 0,
-                            "msg": f"실패 — {type(e).__name__}: {e}"})
-    _touch_sentinel_safe(results)
-    return results
-
-
-def run_all(progress_cb=None) -> list[Result]:
-    """전체 반영 — in_all=True 그룹만 순서대로 실행 (LLM 전용 그룹 제외).
+def run_groups(gkeys: list[str], progress_cb=None) -> list[Result]:
+    """여러 원본 그룹을 순서대로 반영. 센티널은 **마지막에 1회만** 갱신한다.
 
     한 그룹이 실패해도 나머지는 계속 진행한다(DB 미연결이면 폴백만 하고 넘어간다).
+    어떤 실패도 예외로 새어나가지 않는다(앱이 죽으면 안 됨).
     progress_cb(done, total, label) 호출(선택) — UI 진행 표시용.
-    센티널은 마지막에 1회만 갱신한다.
     """
-    targets = [g for g in GROUP_ORDER if RUN_GROUPS[g]["in_all"]]
-    total = len(targets)
+    gkeys = [g for g in (gkeys or []) if g in RUN_GROUPS]
+    total = len(gkeys)
     results: list[Result] = []
-    for i, gkey in enumerate(targets):
+    for i, gkey in enumerate(gkeys):
         entry = RUN_GROUPS[gkey]
         if progress_cb:
             try:
@@ -460,13 +441,30 @@ def run_all(progress_cb=None) -> list[Result]:
         for fn in entry["fns"]:
             try:
                 results.extend(fn())
-            except Exception as e:   # noqa: BLE001
+            except Exception as e:   # noqa: BLE001 — 한 핸들러 실패가 나머지를 막지 않게
                 results.append({"name": gkey, "ok": False, "rows": 0,
                                 "msg": f"실패 — {type(e).__name__}: {e}"})
-    if progress_cb:
+    if progress_cb and total:
         try:
             progress_cb(total, total, "완료")
         except Exception:   # noqa: BLE001
             pass
     _touch_sentinel_safe(results)
     return results
+
+
+def run_group(gkey: str) -> list[Result]:
+    """원본 그룹 1개 반영 (run_groups 위임)."""
+    if gkey not in RUN_GROUPS:
+        return [{"name": gkey, "ok": False, "rows": 0, "msg": f"반영 그룹이 아닙니다: {gkey}"}]
+    return run_groups([gkey])
+
+
+def run_all(progress_cb=None) -> list[Result]:
+    """전체 반영 — in_all=True 그룹만 (LLM 전용 그룹 제외).
+
+    카테고리별 반영은 해당 카테고리의 LLM 그룹까지 돌리지만, 전체 반영은 빠른 것만 돈다.
+    LLM 은 건당 최대 60초 타임아웃이라 미매핑이 쌓이면 수십 분 걸린다.
+    """
+    return run_groups([g for g in GROUP_ORDER if RUN_GROUPS[g]["in_all"]],
+                      progress_cb=progress_cb)
