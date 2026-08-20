@@ -1,4 +1,4 @@
-# data_manager (사내망 전용 · data_manager_F) 데이터 스키마 정의서 (2026-08-11)
+# data_manager (사내망 전용 · data_manager_F) 데이터 스키마 정의서 (2026-08-20)
 
 > **목적** — `data_manager_F` 가 생산하는 중앙 parquet 의 **정본 스키마 정의서**.
 > tbm / esg / esg_mssql / costplan / log(SSIMS) / OCR_N 등 **소비앱을 새로 만들거나 수정할 때 이 문서를 참조**한다.
@@ -77,7 +77,7 @@
 | 4 | `lng_usage.parquet` | ESG | `esg_converter` | ESG xlsx `3.LNG` | 수동 업로드 | `jsh_lng_usage` |
 | 5 | `fuel_plan.parquet` | ESG | `esg_converter` | ESG xlsx `4.연간계획` | 수동 업로드 | `jsh_fuel_plan` |
 | 6 | `pjtmethod.parquet` | ESG | `esg_converter` | ESG xlsx `5.공법` | 수동 업로드 | `jsh_pjtmethod` |
-| 7 | `ptwlist.parquet` | TBM | `tbm_converter` + `ptw_enrich` | `upload/ptw/ptwlist_*.xlsx` | 업로드 / 워처(`ptw_watch_job`) | `jsh_ptwlist` |
+| 7 | `ptwlist.parquet` | TBM | `tbm_converter` + `ptw_enrich` | `upload/ptw/` 의 `ptwlist*` · `밀폐구역*` (xlsx·xls) | 업로드 / 워처(`ptw_watch_job`) | `jsh_ptwlist` |
 | 8 | `mapping.parquet` | TBM | `ptw_enrich` | LLM 생성 캐시 | ptwlist 변환 시 자동 누적 | `jsh_mapping` |
 | 9 | `out.parquet` | 사외작업자 | `out_converter` | `upload/out/outside_*.xlsx` | 수동 업로드 | `jsh_out` |
 | 10 | `ra.parquet` | 사외작업자 | `out_converter` | `out.parquet` 파생 | out 변환 / `regenerate_ra` | `jsh_ra` |
@@ -209,7 +209,10 @@
 #### `ptwlist.parquet` — 작업허가서 일별 전개 목록
 
 **생산자**: `tbm_converter._process_raw` → `ptw_enrich.enrich_ptwlist`
-**입력**: `upload/ptw/ptwlist_YYMMDD.xlsx` (DRM 걸린 파일은 Excel COM 으로 읽고 실패 시 `read_excel` 폴백)
+**입력**: `upload/ptw/` 의 작업허가서 원본 — 인식 패턴은 `tbm_converter.PTW_FILE_GLOBS` 단일본
+(`*ptwlist*.xlsx` · `*ptwlist*.xls` · `밀폐구역*.xlsx` · `밀폐구역*.xls`, 대소문자 무시.
+ptwlist 는 이름 어디에 있어도 되고 `밀폐구역` 은 시작 기준). DRM 걸린 파일은 Excel COM 으로 읽고 실패 시 `read_excel` 폴백.
+헤더는 `_norm_col`(괄호 이후 절삭·공백/`_-./` 제거·대문자)로 정규화 후 ①정확일치 ②부분포함 2단계로 매칭한다
 
 **변환 파이프라인**: 컬럼 매핑 → **팀 필터(`TEAMNM == "시운전팀"` 만 유지)** → `PJT` `ensure_sn` → 날짜 파싱 → **일별 확장** → dedup 누적 → 위험요소 보강
 

@@ -22,7 +22,7 @@ uv run streamlit run app.py --server.port 8510
 | `table_actions.py` | 카탈로그 테이블 단위 변환 — `RUN_SINGLE`(딸깍 실행) / `RUN_MENU`(변환 화면 유도) 레지스트리 + `run(key)`. 폴더 스캔 헬퍼(`scan_folder`) 정본 |
 | `path_config.py` | NAS(사내망)/로컬(사외망) 경로 자동 전환, 업로드/백업 폴더 관리 |
 | `esg_converter.py` | ESG 엑셀 6개 시트 → parquet 6개 (PJT 단위 병합) |
-| `tbm_converter.py` | `ptwlist_*.xlsx` → 일별 확장 → ptwlist.parquet (아카이브 분리는 미구현 — `ARCHIVE_DAYS` 상수만 존재) |
+| `tbm_converter.py` | 작업허가서 원본(`PTW_FILE_GLOBS` = `ptwlist*` / `밀폐구역*`, xlsx·xls) → 일별 확장 → ptwlist.parquet. **파일 인식 패턴 정본** — 워처·폴더전체변환·카탈로그 변환이 모두 이 상수를 쓴다 (아카이브 분리는 미구현 — `ARCHIVE_DAYS` 상수만 존재) |
 | `out_converter.py` | `outside_*.xlsx` → out.parquet + ra.parquet 파생 |
 | `ui_components.py` | 신호등 diff 분석, 카드·컬럼매핑 컴포넌트 |
 | `ui_styles.py` | 산업형 디자인 CSS |
