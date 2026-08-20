@@ -1,6 +1,6 @@
 """ptw_watch_job.py — upload/ptw 폴더 감시 무인 ptwlist 생성 (상시 실행).
 
-watchdog로 upload/ptw 의 ptwlist_*.xlsx 변경(생성/수정)을 감지해 즉시 변환한다.
+watchdog로 upload/ptw 의 작업허가서 원본(ptwlist*/밀폐구역*, xlsx·xls) 변경을 감지해 즉시 변환한다.
 DRM 파일은 tbm_converter.read_drm_excel(win32 Excel)로 열고, 실패 시 read_excel 폴백.
 변환 성공 시: ptwlist.parquet 갱신 → touch_sentinel() → upload 최신 7개 유지 → job_status 기록.
 
@@ -29,13 +29,14 @@ def _log(msg: str) -> None:
 
 
 def _is_target(path: Path, ptw_dir: Path | None = None) -> bool:
-    """감시 대상 판정 — upload/ptw **직속**의 ptwlist_*.xlsx 만.
+    """감시 대상 판정 — upload/ptw **직속**의 작업허가서 원본(PTW_FILE_GLOBS)만.
 
     ptw_dir 을 주면 부모 폴더까지 확인한다. 변환 성공분을 하위 _processed/ 로 옮기면
-    watchdog 의 on_moved 가 dest_path(=_processed/ptwlist_*.xlsx)로 발화하는데,
+    watchdog 의 on_moved 가 dest_path(=_processed/…xlsx)로 발화하는데,
     이름만 보면 대상으로 오인해 '변환 → 이동 → 다시 이벤트' 루프에 빠진다.
     """
-    if not (path.suffix.lower() == ".xlsx" and path.name.lower().startswith("ptwlist_")):
+    import tbm_converter          # 지연 import — 기동 시 pandas 로딩 회피(다른 함수와 동일)
+    if not tbm_converter.is_ptw_file(path.name):
         return False
     if ptw_dir is not None and path.parent.resolve() != Path(ptw_dir).resolve():
         return False
@@ -86,7 +87,7 @@ def process_file(path: Path) -> None:
             pc.touch_sentinel()
             moved = pc.move_file(path, pc.get_processed_dir("ptw")).name
             # 백업·처리완료 보관분만 최신 KEEP_UPLOADS 개 유지 (업로드 폴더는 이동으로 이미 비워짐)
-            # 백업 사본은 "YYYYMMDD_ptwlist_*.xlsx" 라 기본 패턴(ptwlist_*)에 안 걸린다 → *.xlsx 로
+            # 백업 사본은 "YYYYMMDD_" 접두가 붙어 기본 패턴에 안 걸릴 수 있다 → *.xlsx 로
             n_bk = tbm_converter.prune_uploads(pc.get_backup_dir("ptw"), KEEP_UPLOADS, ("*.xlsx",))
             n_pr = tbm_converter.prune_uploads(pc.get_processed_dir("ptw"), KEEP_UPLOADS, ("*.xlsx",))
             _log(f"OK {path.name}: {msg} (→ _processed/{moved}, prune 백업 {n_bk}·완료 {n_pr})")
@@ -108,14 +109,14 @@ def _safe_mtime(p: Path):
 
 
 def _list_ptwlist(ptw_dir: Path) -> list[Path]:
-    """ptwlist_*.xlsx 경로 목록 — os.listdir(이름만, stat·디렉토리 stat 미접근, DRM 안전).
-    Path.glob 은 시작 시 부모 디렉토리에 is_dir()=stat 를 호출하므로 사용하지 않는다."""
+    """작업허가서 원본 경로 목록(PTW_FILE_GLOBS) — os.listdir(이름만, stat·디렉토리 stat
+    미접근, DRM 안전). Path.glob 은 시작 시 부모 디렉토리에 is_dir()=stat 를 호출하므로 쓰지 않는다."""
+    import tbm_converter          # 지연 import — 기동 시 pandas 로딩 회피
     try:
         names = os.listdir(ptw_dir)
     except Exception:
         return []
-    return [ptw_dir / n for n in names
-            if n.lower().endswith(".xlsx") and n.lower().startswith("ptwlist_")]
+    return [ptw_dir / n for n in names if tbm_converter.is_ptw_file(n)]
 
 
 def _reconcile(ptw_dir: Path, pq_dir: Path) -> None:

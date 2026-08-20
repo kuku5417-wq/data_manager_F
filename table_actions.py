@@ -164,17 +164,20 @@ def _run_ra() -> list[Result]:
 
 
 def _run_ptwlist() -> list[Result]:
-    """upload/ptw 의 ptwlist_*.xlsx 전체 → ptwlist.parquet 누적 (dedup + LLM 위험요소 보강).
+    """upload/ptw 의 작업허가서 원본 전체 → ptwlist.parquet 누적 (dedup + LLM 위험요소 보강).
 
+    인식 패턴은 tbm_converter.PTW_FILE_GLOBS 단일본을 쓴다 — 워처·폴더전체변환·진단과 동일.
+    (여기에 "*ptwlist*.xlsx" 를 따로 박아두면 현장 파일명 "밀폐구역*" 을 못 찾는다.)
     폴더 전체 변환 버튼과 달리 prune_uploads(원본 삭제)를 하지 않는다.
     """
     import pandas as pd
     import tbm_converter
     folder = pc.get_upload_dir("ptw")
-    files = scan_folder(folder, "*ptwlist*.xlsx")
+    files = scan_folder(folder, tbm_converter.PTW_FILE_GLOBS)
     if not files:
+        _pats = " / ".join(tbm_converter.PTW_FILE_GLOBS)
         return [{"name": "ptwlist", "ok": False, "skipped": True, "rows": 0,
-                 "msg": f"변환할 ptwlist 파일이 없습니다 — 폴더/파일명 확인: {folder}"}]
+                 "msg": f"변환할 작업허가서 파일이 없습니다 — 폴더/파일명 확인: {folder} (인식 패턴: {_pats})"}]
     pq, bk = pc.get_parquet_dir(), pc.get_backup_dir("ptw")
     results: list[Result] = []
     ok_n = fail_n = 0
@@ -266,7 +269,7 @@ def _run_out() -> list[Result]:
 RUN_SINGLE: dict[str, dict] = {
     "ptwlist": {
         "label": "📥 ptwlist 변환",
-        "help": "upload/ptw 의 ptwlist_*.xlsx 전체 → 일별 확장·dedup 누적 + LLM 위험요소 보강. "
+        "help": "upload/ptw 의 작업허가서 원본(ptwlist*/밀폐구역*, xlsx·xls) 전체 → 일별 확장·dedup 누적 + LLM 위험요소 보강. "
                 "원본 파일은 삭제하지 않습니다.",
         "fn": _run_ptwlist,
     },
@@ -364,7 +367,7 @@ RUN_GROUPS: dict[str, dict] = {
     },
     "ptw": {
         "label": "🦺 작업허가(ptwlist)",
-        "help": "upload/ptw 의 ptwlist_*.xlsx → 일별 확장·dedup 누적. "
+        "help": "upload/ptw 의 작업허가서 원본(ptwlist*/밀폐구역*, xlsx·xls) → 일별 확장·dedup 누적. "
                 "매핑에 있는 작업유형은 위험요소가 함께 채워진다.",
         "fns": [_run_ptwlist],
         "in_all": True,

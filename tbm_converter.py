@@ -1,16 +1,33 @@
-"""tbm_converter.py — ptwlist_YYMMDD.xlsx → ptwlist.parquet (일별 확장 + 누적 병합)
+"""tbm_converter.py — 작업허가서 엑셀 → ptwlist.parquet (일별 확장 + 누적 병합)
 
 STDATE~EDDATE 범위를 하루씩 DATE 행으로 확장.
 예) 6/14 08:00 ~ 6/16 13:00 → DATE="26-06-14", "26-06-15", "26-06-16" 3행.
 매일 신규 파일 업로드 시 기존 parquet과 병합, 동일 DATE+위치 항목은 신규로 교체.
+
+인식 파일명은 PTW_FILE_GLOBS 하나로 관리한다 — 워처·수동 변환·진단이 같은 값을 쓴다.
 """
 from __future__ import annotations
 
+import fnmatch
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
+
+# 작업허가서 원본 파일 인식 패턴. 현장 내보내기 파일명이 "밀폐구역…" 이라 함께 잡는다.
+# ptwlist 는 이름 어디에 있어도(날짜접두 20260819_ptwlist.xlsx 허용), 밀폐구역은 시작 기준.
+# 리더가 win32 COM(Excel) 이라 구형 .xls 도 읽힌다.
+PTW_FILE_GLOBS = ["*ptwlist*.xlsx", "*ptwlist*.xls", "밀폐구역*.xlsx", "밀폐구역*.xls"]
+
+
+def is_ptw_file(name: str) -> bool:
+    """파일명이 작업허가서 원본 패턴인지(대소문자 무시). '_' 접두(_processed 등)는 제외."""
+    n = str(name).strip()
+    if not n or n.startswith("_"):
+        return False
+    low = n.lower()
+    return any(fnmatch.fnmatch(low, g.lower()) for g in PTW_FILE_GLOBS)
 
 from sn_util import ensure_sn
 from parquet_io import save_parquet_atomic
@@ -44,22 +61,77 @@ DEDUP_COLS   = ["DEPTNM", "PJT", "AREA_DETAIL", "ACODENM", "DATE"]
 ARCHIVE_DAYS = 14   # 이 기간(일) 초과 데이터는 ptwlist_archive.parquet으로 분리
 
 
+def _norm_col(name) -> str:
+    """컬럼명 비교용 정규화 — 괄호 이후 절삭 + 공백·언더바·하이픈·줄바꿈 제거 후 대문자.
+
+    현장 파일 헤더는 "호선(선박)" · "작업 시작일" · 줄바꿈 섞인 형태로 온다. 정확 일치로만
+    비교하면 못 잡고, 못 잡은 표준 컬럼은 아래에서 전부 None 이 돼 **행이 통째로 사라진다**
+    (STDATE 가 None 이면 _expand_to_daily 가 전 행을 건너뛴다).
+    """
+    t = str(name)
+    for br in ("(", "（", "["):
+        cut = t.find(br)
+        if cut > 0:
+            t = t[:cut]
+    t = "".join(str(t).split())          # 공백/탭/개행 전부 제거
+    return "".join(ch for ch in t.upper() if ch not in "_-./")
+
+
 def _map_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Excel 컬럼명 → 표준 컬럼명. 매칭 안 되면 None."""
+    """Excel 컬럼명 → 표준 컬럼명. 매칭 안 되면 None.
+
+    2단계로 찾는다 — ① 정규화 후 정확 일치, ② 남은 것만 부분 포함(`작업 시작일` ⊃ `시작일`).
+    ②를 나중에 도는 이유는 정확 일치가 항상 이겨야 하기 때문이다(먼저 돌면 포함 매칭이
+    다른 표준 컬럼의 정답을 가로챈다). ②는 3글자 이상 후보만 쓴다 — `팀`·`호선` 같은
+    짧은 후보는 `팀장명` 처럼 엉뚱한 컬럼에 붙는다.
+
+    못 찾은 표준 컬럼 목록을 df.attrs["unmapped"] 에 남긴다(변환 결과 메시지에 쓴다).
+    """
     col_map: dict[str, str] = {}
     used: set[str] = set()
+    norm_cols = {c: _norm_col(c) for c in df.columns}
+
+    # ① 정확 일치
+    rest: list[str] = []
     for std_col, cands in COL_CANDIDATES.items():
+        hit = None
         for cand in cands:
-            matches = [c for c in df.columns if c.strip().upper() == cand.upper() and c not in used]
+            nc = _norm_col(cand)
+            matches = [c for c, n in norm_cols.items() if n == nc and c not in used]
             if matches:
-                col_map[matches[0]] = std_col
-                used.add(matches[0])
+                hit = matches[0]
                 break
+        if hit is None:
+            rest.append(std_col)
+            continue
+        col_map[hit] = std_col
+        used.add(hit)
+
+    # ② 부분 포함 — 가장 긴 후보가 걸린 컬럼을 택한다
+    unmapped: list[str] = []
+    for std_col in rest:
+        cands = sorted((_norm_col(c) for c in COL_CANDIDATES[std_col]), key=len, reverse=True)
+        hit = None
+        for nc in cands:
+            if len(nc) < 3:
+                continue
+            matches = [c for c, n in norm_cols.items() if nc in n and c not in used]
+            if matches:
+                hit = matches[0]
+                break
+        if hit is None:
+            unmapped.append(std_col)
+            continue
+        col_map[hit] = std_col
+        used.add(hit)
+
     result = df.rename(columns=col_map)
     for std_col in COL_CANDIDATES:
         if std_col not in result.columns:
             result[std_col] = None
-    return result[list(COL_CANDIDATES.keys())]
+    out = result[list(COL_CANDIDATES.keys())]
+    out.attrs["unmapped"] = unmapped
+    return out
 
 
 def _parse_dt_col(series: pd.Series) -> pd.Series:
@@ -219,10 +291,10 @@ def read_ptw_excel(src: bytes | Path | str) -> pd.DataFrame:
 
 
 def prune_uploads(ptw_dir: Path | str, keep: int = 7,
-                  patterns: "tuple[str, ...] | list[str]" = ("ptwlist_*.xlsx",)) -> int:
+                  patterns: "tuple[str, ...] | list[str]" = tuple(PTW_FILE_GLOBS)) -> int:
     """upload 폴더의 지정 패턴 원본을 mtime 최신순 keep개만 남기고 삭제.
 
-    여러 glob(patterns)을 합쳐 최신순 정렬 → 초과분 삭제. 기본값은 ptwlist 전용(하위호환).
+    여러 glob(patterns)을 합쳐 최신순 정렬 → 초과분 삭제. 기본값은 작업허가서 원본 전체.
     _backup/_processed 등 하위폴더는 glob 비재귀라 영향 없음. 삭제한 파일 수 반환.
     """
     ptw_dir = Path(ptw_dir)
@@ -255,9 +327,23 @@ def _process_raw(raw_df: pd.DataFrame, filename: str, parquet_dir: Path) -> list
     results: list[dict] = []
 
     # 컬럼 매핑 → 팀 필터 → 호선 SN 수렴 → 날짜 파싱 → 일별 확장
-    mapped = _map_columns(raw_df)
+    mapped   = _map_columns(raw_df)
+    unmapped = list(mapped.attrs.get("unmapped", []))
+    raw_rows = len(mapped)
+
+    # 0행이 되는 경로가 둘(팀 필터·헤더 매핑 실패)인데 결과 메시지가 같아 원인을 알 수 없었다.
+    # 어느 쪽에서 몇 행이 사라졌는지 메시지에 남긴다.
+    team_note = ""
     if "TEAMNM" in mapped.columns:   # 시운전팀만 유지 (파일·LLM 비용 절감)
-        mapped = mapped[mapped["TEAMNM"].astype(str).str.strip() == TEAM_KEEP].reset_index(drop=True)
+        keep    = mapped["TEAMNM"].astype(str).str.strip() == TEAM_KEEP
+        dropped = int((~keep).sum())
+        if dropped:
+            found = (mapped.loc[~keep, "TEAMNM"].astype(str).str.strip()
+                     .replace({"": "(빈값)", "None": "(빈값)", "nan": "(빈값)"})
+                     .value_counts().head(5))
+            names = " · ".join(f"{k}({v})" for k, v in found.items())
+            team_note = f" → 팀 필터 제외 {dropped}행(발견된 팀: {names})"
+        mapped = mapped[keep].reset_index(drop=True)
     mapped["PJT"] = mapped["PJT"].map(ensure_sn)        # HULLNO "2701" → "SN2701"
     mapped["STDATE"] = _parse_dt_col(mapped["STDATE"])
     mapped["EDDATE"] = _parse_dt_col(mapped["EDDATE"])
@@ -265,10 +351,15 @@ def _process_raw(raw_df: pd.DataFrame, filename: str, parquet_dir: Path) -> list
     src_rows = len(mapped)
     new_rows = len(new_df)
 
-    results.append({
-        "name": filename, "ok": True, "rows": src_rows,
-        "msg": f"원본 {src_rows}행 → DATE 확장 {new_rows}행",
-    })
+    msg = f"원본 {raw_rows}행{team_note} → DATE 확장 {new_rows}행"
+    if unmapped:
+        cols = " · ".join(str(c) for c in list(raw_df.columns)[:15])
+        msg += f"\n매핑 실패 컬럼: {' · '.join(unmapped)}\n실제 컬럼: {cols}"
+    if new_rows == 0 and not unmapped and not team_note:
+        msg += "\n시작일시(STDATE)를 날짜로 읽지 못했을 수 있음 — 원본 날짜 형식 확인 필요"
+
+    # rows 0 을 성공으로 보고하면 워처가 원본을 _processed 로 옮겨 재시도가 불가능해진다.
+    results.append({"name": filename, "ok": new_rows > 0, "rows": new_rows, "msg": msg})
 
     out_path = parquet_dir / "ptwlist.parquet"
     try:

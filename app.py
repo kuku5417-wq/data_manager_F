@@ -415,7 +415,8 @@ def _render_source_bar(tab: str) -> None:
     """소스 바 — 폴더스캔 + 파일선택 + 업로드 3행으로 압축."""
     _cfg = {
         "ESG":     {"pattern": "*.xlsx",         "hint": "6개 시트 포함 xlsx", "multi": False},
-        "TBM":     {"pattern": "*ptwlist*.xlsx", "hint": "ptwlist_YYMMDD.xlsx (날짜접두 YYYYMMDD_ 허용)", "multi": False},
+        "TBM":     {"pattern": tbm_converter.PTW_FILE_GLOBS,
+                    "hint": "밀폐구역*.xlsx / ptwlist*.xlsx (xls 도 가능, 날짜접두 허용)", "multi": False},
         "Out":     {"pattern": out_converter.OUT_FILE_GLOBS, "hint": "outside_*.xlsx 또는 사외작업자 출입관리 정보_*.xlsx", "multi": True},
         "SQL 대체": {"pattern": "*.parquet",      "hint": "parquet",              "multi": True},
     }
@@ -479,7 +480,13 @@ def _render_source_bar(tab: str) -> None:
                 _handle_parse(tab, sel, from_uploader=False)
 
     # ── 행 3: 직접 업로드 (compact) ──────────────────────────────────
-    ftype    = ["parquet"] if tab == "SQL 대체" else ["xlsx"]
+    # TBM(작업허가서)은 폴더 스캔이 .xls 도 받는다(PTW_FILE_GLOBS) — 업로드도 맞춰 준다.
+    if tab == "SQL 대체":
+        ftype = ["parquet"]
+    elif tab == "TBM":
+        ftype = ["xlsx", "xls"]
+    else:
+        ftype = ["xlsx"]
     uploaded = st.file_uploader(
         "또는 직접 업로드", type=ftype, accept_multiple_files=cfg["multi"],
         key=f"uploader_{tab}",
@@ -787,7 +794,7 @@ def render_tbm_tab() -> None:
     if st.button("📥 폴더 전체 변환 → ptwlist.parquet", key="tbm_convert_all", type="primary",
                  help=f"{_folder} 의 ptwlist 파일을 읽어(win32/DRM) 일별 확장·병합 저장. "
                       f"변환한 원본은 _backup 사본을 남기고 _processed 로 옮긴다"):
-        files = _scan_folder(_folder, "*ptwlist*.xlsx")
+        files = _scan_folder(_folder, tbm_converter.PTW_FILE_GLOBS)
         if not files:
             st.warning(f"변환할 ptwlist 파일이 없습니다 — 폴더/파일명 확인: {_folder}")
         else:
